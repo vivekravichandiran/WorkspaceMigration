@@ -50,6 +50,8 @@ MIGRATE_REPO_URL="https://github.com/databrickslabs/migrate.git"
 # ── Default values ────────────────────────────────────────────────────────────
 WORKSPACE_URL=""
 PAT_TOKEN=""
+CLIENT_ID=""
+CLIENT_SECRET=""
 SESSION_ID=""
 EXPORT_DIR="logs"
 CLOUD_FLAG=""
@@ -77,7 +79,11 @@ ${BOLD}USAGE${RESET}
 
 ${BOLD}REQUIRED${RESET}
   -u, --workspace-url URL    Databricks workspace URL (https://...)
+
+${BOLD}AUTHENTICATION (one of the following)${RESET}
   -t, --token PAT            Personal Access Token (dapi...)
+      --client-id ID         OAuth Service Principal client ID
+      --client-secret SECRET OAuth Service Principal client secret
 
 ${BOLD}EXPORT OPTIONS${RESET}
   -s, --session ID           Session identifier (auto-generated if omitted)
@@ -143,6 +149,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -u|--workspace-url)    WORKSPACE_URL="$2";             shift 2 ;;
         -t|--token)            PAT_TOKEN="$2";                  shift 2 ;;
+        --client-id)           CLIENT_ID="$2";                  shift 2 ;;
+        --client-secret)       CLIENT_SECRET="$2";              shift 2 ;;
         -s|--session)          SESSION_ID="$2";                 shift 2 ;;
         -d|--export-dir)       EXPORT_DIR="$2";                 shift 2 ;;
         --azure)               CLOUD_FLAG="--azure";            shift   ;;
@@ -169,17 +177,58 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ── OAuth token exchange ───────────────────────────────────────────────────────
+fetch_oauth_token() {
+    info "Fetching OAuth token for client_id: ${CLIENT_ID} …"
+    local token_url="${WORKSPACE_URL}/oidc/v1/token"
+    local ssl_flag=""
+    $NO_SSL && ssl_flag="-k"
+    local response
+    response=$(curl -s $ssl_flag -X POST "$token_url" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&scope=all-apis")
+    local tok
+    tok=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('access_token',''))" 2>/dev/null || true)
+    if [[ -z "$tok" ]]; then
+        error "OAuth token exchange failed. Response: ${response}"
+        exit 1
+    fi
+    PAT_TOKEN="$tok"
+    success "OAuth token obtained successfully (expires in 3600s)"
+}
+
 # ── Validation ────────────────────────────────────────────────────────────────
 validate_args() {
     local errs=0
     [[ -z "$WORKSPACE_URL" ]] && { error "--workspace-url is required";          (( errs++ )) || true; }
-    [[ -z "$PAT_TOKEN"     ]] && { error "--token is required";                  (( errs++ )) || true; }
     [[ "$WORKSPACE_URL" != https://* ]] && { error "--workspace-url must start with https://"; (( errs++ )) || true; }
-    [[ ${#PAT_TOKEN} -lt 10 ]]  && { error "--token looks too short";            (( errs++ )) || true; }
+
+    # Auth: require either PAT token OR both client-id + client-secret
+    local has_pat=false; local has_oauth=false
+    [[ -n "$PAT_TOKEN"     ]] && has_pat=true
+    [[ -n "$CLIENT_ID" && -n "$CLIENT_SECRET" ]] && has_oauth=true
+
+    if ! $has_pat && ! $has_oauth; then
+        error "Provide --token (PAT) or both --client-id and --client-secret"
+        (( errs++ )) || true
+    fi
+    if [[ -n "$CLIENT_ID" && -z "$CLIENT_SECRET" ]]; then
+        error "--client-secret is required when --client-id is provided"
+        (( errs++ )) || true
+    fi
+    if [[ -z "$CLIENT_ID" && -n "$CLIENT_SECRET" ]]; then
+        error "--client-id is required when --client-secret is provided"
+        (( errs++ )) || true
+    fi
     if [[ $errs -gt 0 ]]; then echo ""; usage; exit 1; fi
 }
 
 $REPORT_ONLY || validate_args
+
+# Exchange client credentials for a PAT-equivalent OAuth token
+if [[ -z "$PAT_TOKEN" && -n "$CLIENT_ID" ]]; then
+    fetch_oauth_token
+fi
 
 # ── System dependency check ───────────────────────────────────────────────────
 check_system_deps() {
@@ -384,6 +433,7 @@ INVENTORY_ARGS=(
     --token         "$PAT_TOKEN"
     --output        "$INVENTORY_FILE"
 )
+# Note: PAT_TOKEN is already populated (either directly or via OAuth exchange)
 $NO_SSL && INVENTORY_ARGS+=(--no-ssl-verification)
 if python3 "${SCRIPT_DIR}/workspace_inventory.py" "${INVENTORY_ARGS[@]}"; then
     success "Inventory complete → ${INVENTORY_FILE}"
