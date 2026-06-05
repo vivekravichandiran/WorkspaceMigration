@@ -1,6 +1,32 @@
 {
   "_comment": "GCP cluster configuration settings applied during job import. Edit this file to customise target workspace behaviour.",
 
+  "workspace_excludes": {
+    "_comment": "Regex patterns applied during staging. Objects/paths matching ANY pattern in each list are skipped.",
+    "path_patterns": [
+      "^/Users/svc-.*",
+      ".*\\.bak$",
+      "^/Shared/archive/.*"
+    ],
+    "job_name_patterns": [
+      ".*\\[DEPRECATED\\].*",
+      "^test_.*"
+    ],
+    "cluster_name_patterns": []
+  },
+
+  "user_domain_mapping": {
+    "_comment": "Rename email domains globally. Key = source domain suffix, value = target domain. Applied AFTER user_id_mapping.",
+    "mynt.myntra.com": "myntra.com",
+    "oldcompany.com": "newcompany.com"
+  },
+
+  "user_id_mapping": {
+    "_comment": "Explicit source-to-target user remapping. Takes precedence over user_domain_mapping. Key = source email/ID, value = target email.",
+    "3000818416@mynt.myntra.com": "ashi.singhla@myntra.com",
+    "svc_account@oldcompany.com": "service@newcompany.com"
+  },
+
   "gcp_attributes": {
     "_comment": "Fallback GCP attributes injected when the source Azure cluster has no explicit availability setting. The 'availability' field is auto-mapped from azure_attributes: ON_DEMAND_AZURE→ON_DEMAND_GCP | SPOT_AZURE→PREEMPTIBLE_GCP | SPOT_WITH_FALLBACK_AZURE→SPOT_WITH_FALLBACK_GCP. Set here only as the default when Azure has no azure_attributes.",
     "availability": "ON_DEMAND_GCP",

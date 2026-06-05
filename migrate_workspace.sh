@@ -527,6 +527,38 @@ info "To regenerate this report later:"
 info "  ./migrate_workspace.sh --workspace-url $WORKSPACE_URL --token <PAT> --session $SESSION_ID --report-only"
 echo ""
 
+# ── Step 2 of 3: Auto-staging ─────────────────────────────────────────────────
+# Copy the raw export → <session>_staging/, apply all transforms from
+# gcp_import_config.json:
+#   • GCP cluster rewrite (node types, gcp_attributes, etc.)
+#   • User domain remapping  (user_domain_mapping)
+#   • User ID mapping        (user_id_mapping)
+#   • Exclude filters        (workspace_excludes patterns)
+# The original export directory is left untouched so you can diff raw vs staged.
+# ──────────────────────────────────────────────────────────────────────────────
+STAGING_DIR="${SESSION_EXPORT_DIR}_staging"
+header "Step 2 of 3 – Build Staging (review before import)"
+info  "Raw export  : ${SESSION_EXPORT_DIR}"
+info  "Staging dir : ${STAGING_DIR}"
+echo  ""
+
+STAGING_EXIT=0
+python3 "${SCRIPT_DIR}/import_jobs_gcp.py" \
+    --session-dir   "${SESSION_EXPORT_DIR}" \
+    --staging-dir   "${STAGING_DIR}" \
+    --config        "${SCRIPT_DIR}/gcp_import_config.json" \
+    --build-staging \
+    || STAGING_EXIT=$?
+
+if [[ $STAGING_EXIT -eq 0 ]]; then
+    success "Staging complete → ${STAGING_DIR}"
+    info    "Review the staged files, then run the import pointing to the staging dir."
+else
+    warn    "Staging step failed (exit ${STAGING_EXIT}) – you can rebuild manually:"
+    warn    "  python3 import_jobs_gcp.py --session-dir ${SESSION_EXPORT_DIR} --build-staging"
+fi
+echo ""
+
 # ── Generate HTML export report ───────────────────────────────────────────────
 info "Generating HTML export report …"
 HTML_EXPORT_REPORT="${SESSION_EXPORT_DIR}/export_report.html"
@@ -546,9 +578,16 @@ echo "  ── Output files ─────────────────�
 if [[ -f "${INVENTORY_FILE}" ]]; then
     echo "  🗂️  Pre-export inventory : ${INVENTORY_FILE}"
 fi
-echo "  📋 Text report : ${REPORT_FILE}"
+echo "  📋 Text report  : ${REPORT_FILE}"
 if [[ -f "${HTML_EXPORT_REPORT}" ]]; then
-    echo "  📊 HTML report : ${HTML_EXPORT_REPORT}"
+    echo "  📊 HTML report  : ${HTML_EXPORT_REPORT}"
 fi
+if [[ -d "${STAGING_DIR}" ]]; then
+    echo "  📦 Staged files : ${STAGING_DIR}   ← review here before import"
+fi
+echo ""
+echo "  ── Next step ────────────────────────────────────────────"
+echo "  Review staging dir, then run:"
+echo "  ./import_gcp.sh --workspace-url <TARGET_URL> --token <PAT> --session ${SESSION_ID}"
 echo ""
 exit $EXPORT_EXIT

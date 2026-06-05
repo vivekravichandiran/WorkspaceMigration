@@ -69,6 +69,8 @@ import logging
 import os
 import re
 import shutil
+import re
+import shutil
 import sys
 import urllib3
 from datetime import datetime
@@ -163,6 +165,102 @@ def _strip_job_id_suffix(name: str, cfg: Dict) -> str:
     sep = opts.get("suffix_separator", ":::")
     idx = name.find(sep)
     return name[:idx].rstrip() if idx != -1 else name
+
+
+# ---------------------------------------------------------------------------
+# User remapping
+# ---------------------------------------------------------------------------
+
+def remap_user(user: str, cfg: Dict) -> str:
+    """Apply user_id_mapping (exact match) then user_domain_mapping (domain suffix).
+
+    Examples (with config):
+        user_id_mapping:    "3000818416@mynt.myntra.com" → "ashi.singhla@myntra.com"
+        user_domain_mapping: "mynt.myntra.com" → "myntra.com"
+            vivek@mynt.myntra.com → vivek@myntra.com
+    """
+    if not user:
+        return user
+
+    # 1. Exact ID mapping takes highest precedence
+    id_map = cfg.get("user_id_mapping", {})
+    if user in id_map:
+        mapped = id_map[user]
+        _LOG.debug("user_id_mapping: %s → %s", user, mapped)
+        return mapped
+
+    # 2. Domain-suffix mapping
+    domain_map = cfg.get("user_domain_mapping", {})
+    for src_domain, tgt_domain in domain_map.items():
+        if user.lower().endswith("@" + src_domain.lower()):
+            local_part = user[: -(len(src_domain) + 1)]
+            mapped = f"{local_part}@{tgt_domain}"
+            _LOG.debug("user_domain_mapping: %s → %s", user, mapped)
+            return mapped
+
+    return user
+
+
+def _remap_users_in_obj(obj: Any, cfg: Dict) -> Any:
+    """Recursively walk a JSON object and remap any string values that look like
+    user emails / IDs (fields containing 'user', 'owner', 'creator', 'email',
+    'run_as', 'notification').
+    """
+    _USER_KEYS = {
+        "user_name", "creator_user_name", "run_as_user_name",
+        "owner", "created_by", "email", "value",
+        "notification_email", "email_address",
+    }
+    if isinstance(obj, dict):
+        return {
+            k: (remap_user(v, cfg) if k in _USER_KEYS and isinstance(v, str)
+                else _remap_users_in_obj(v, cfg))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_remap_users_in_obj(item, cfg) for item in obj]
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# Exclude / skip filters
+# ---------------------------------------------------------------------------
+
+_EXCLUDE_PATTERN_CACHE: Dict[str, List[re.Pattern]] = {}
+
+def _compile_patterns(patterns: List[str], key: str) -> List[re.Pattern]:
+    if key not in _EXCLUDE_PATTERN_CACHE:
+        compiled = []
+        for p in patterns:
+            try:
+                compiled.append(re.compile(p, re.IGNORECASE))
+            except re.error as e:
+                _LOG.warning("Invalid exclude pattern %r: %s", p, e)
+        _EXCLUDE_PATTERN_CACHE[key] = compiled
+    return _EXCLUDE_PATTERN_CACHE[key]
+
+
+def should_exclude(value: str, cfg: Dict, kind: str = "path") -> bool:
+    """Return True if *value* matches any exclude pattern for *kind*.
+
+    kind values:
+        "path"    → workspace_excludes.path_patterns
+        "job"     → workspace_excludes.job_name_patterns
+        "cluster" → workspace_excludes.cluster_name_patterns
+    """
+    excludes = cfg.get("workspace_excludes", {})
+    key_map  = {
+        "path":    "path_patterns",
+        "job":     "job_name_patterns",
+        "cluster": "cluster_name_patterns",
+    }
+    pattern_list = excludes.get(key_map.get(kind, "path_patterns"), [])
+    patterns = _compile_patterns(pattern_list, kind)
+    for pat in patterns:
+        if pat.search(value):
+            _LOG.info("Excluding %s %r  (matched pattern %r)", kind, value, pat.pattern)
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -320,9 +418,10 @@ def transform_cluster_spec(
     if "cluster_name" in c:
         c["cluster_name"] = _sanitise(c["cluster_name"], cfg)
 
-    # Sanitise creator_user_name inside cluster spec (some versions embed it)
+    # Sanitise + remap creator_user_name inside cluster spec
     if "creator_user_name" in c:
-        c["creator_user_name"] = _sanitise(c["creator_user_name"], cfg)
+        c["creator_user_name"] = remap_user(
+            _sanitise(c["creator_user_name"], cfg), cfg)
 
     return c
 
@@ -331,12 +430,22 @@ def transform_cluster_spec(
 # Per-file transformers
 # ---------------------------------------------------------------------------
 
-def _transform_job(job: Dict, cfg: Dict, node_map: Dict[str, str], warnings: List[str]) -> Dict:
+def _transform_job(job: Dict, cfg: Dict, node_map: Dict[str, str], warnings: List[str]) -> Optional[Dict]:
+    """Return transformed job dict, or None if the job should be excluded."""
     j = copy.deepcopy(job)
 
-    # Sanitise outer-level creator_user_name
+    settings = j.get("settings", {})
+    job_name = settings.get("name", "")
+
+    # ── Exclude check ─────────────────────────────────────────────────────────
+    if job_name and should_exclude(job_name, cfg, "job"):
+        warnings.append(f"EXCLUDED job: {job_name!r}")
+        return None
+
+    # Sanitise + remap outer-level creator_user_name
     if "creator_user_name" in j:
-        j["creator_user_name"] = _sanitise(j["creator_user_name"], cfg)
+        j["creator_user_name"] = remap_user(
+            _sanitise(j["creator_user_name"], cfg), cfg)
 
     # Remove unwanted outer fields.
     # NOTE: job_id is never stripped – the migrate tool uses it for checkpoint tracking
@@ -346,8 +455,6 @@ def _transform_job(job: Dict, cfg: Dict, node_map: Dict[str, str], warnings: Lis
             continue  # always preserve job_id
         j.pop(f, None)
 
-    settings = j.get("settings", {})
-
     # Strip :::JOB_ID from name
     if "name" in settings:
         settings["name"] = _strip_job_id_suffix(settings["name"], cfg)
@@ -356,6 +463,9 @@ def _transform_job(job: Dict, cfg: Dict, node_map: Dict[str, str], warnings: Lis
     pause = cfg.get("schedule_behaviour", {}).get("set_pause_status", "PAUSED")
     if pause and "schedule" in settings:
         settings["schedule"]["pause_status"] = pause
+
+    # Remap all user references recursively
+    j = _remap_users_in_obj(j, cfg)
 
     # Clear email notifications if requested
     if cfg.get("email_notifications", {}).get("clear_on_import"):
@@ -389,13 +499,21 @@ def _transform_job(job: Dict, cfg: Dict, node_map: Dict[str, str], warnings: Lis
     return j
 
 
-def _transform_cluster_record(cluster: Dict, cfg: Dict, node_map: Dict[str, str], warnings: List[str]) -> Dict:
-    """Transform a standalone cluster record (from clusters.log)."""
+def _transform_cluster_record(cluster: Dict, cfg: Dict, node_map: Dict[str, str],
+                               warnings: List[str]) -> Optional[Dict]:
+    """Transform a standalone cluster record (from clusters.log). Returns None if excluded."""
     c = copy.deepcopy(cluster)
 
-    # Sanitise outer fields
+    # ── Exclude check ────────────────────────────────────────────────────────
+    cluster_name = c.get("cluster_name", "")
+    if cluster_name and should_exclude(cluster_name, cfg, "cluster"):
+        warnings.append(f"EXCLUDED cluster: {cluster_name!r}")
+        return None
+
+    # Sanitise + remap outer fields
     if "creator_user_name" in c:
-        c["creator_user_name"] = _sanitise(c["creator_user_name"], cfg)
+        c["creator_user_name"] = remap_user(
+            _sanitise(c["creator_user_name"], cfg), cfg)
 
     # Remove runtime-only outer fields irrelevant to recreation.
     # NOTE: cluster_id is preserved intentionally – the migrate tool's
@@ -534,12 +652,17 @@ def preprocess_session(
         _LOG.info("Transforming jobs.log …")
         _backup(jobs_path)
         jobs = _read_jsonl(jobs_path)
-        out, warnings = [], []
+        out, warnings, excluded_count = [], [], 0
         for job in jobs:
             transformed = _transform_job(job, cfg, node_map, warnings)
+            if transformed is None:
+                excluded_count += 1
+                continue
             out.append(transformed)
             # Track node type changes for reporting
             _record_node_changes(job, transformed, "job", summary["node_type_changes"])
+        if excluded_count:
+            _LOG.info("  → %d job(s) excluded by workspace_excludes patterns", excluded_count)
         _write_jsonl(jobs_path, out)
         # Save GCP-ready bundle: just the settings payloads (ready for API create)
         gcp_jobs = [{"name": j.get("settings", {}).get("name", "?"),
@@ -579,11 +702,16 @@ def preprocess_session(
         _LOG.info("Transforming clusters.log …")
         _backup(clusters_path)
         clusters = _read_jsonl(clusters_path)
-        out, warnings = [], []
+        out, warnings, excluded_count = [], [], 0
         for c in clusters:
             transformed = _transform_cluster_record(c, cfg, node_map, warnings)
+            if transformed is None:
+                excluded_count += 1
+                continue
             out.append(transformed)
             _record_node_changes(c, transformed, "cluster", summary["node_type_changes"])
+        if excluded_count:
+            _LOG.info("  → %d cluster(s) excluded by workspace_excludes patterns", excluded_count)
         _write_jsonl(clusters_path, out)
         _write_json(os.path.join(gcp_ready_dir, "clusters.json"), out)
         summary["all_warnings"].extend(warnings)
@@ -621,6 +749,58 @@ def preprocess_session(
     _write_json(os.path.join(session_dir, "gcp_transform_manifest.json"), summary)
     _LOG.info("Transformation manifest: %s/gcp_transform_manifest.json", session_dir)
     _LOG.info("GCP-ready JSON bundles : %s/", gcp_ready_dir)
+
+    return summary
+
+
+def build_staging(
+    source_dir: str,
+    staging_dir: str,
+    cfg: Dict,
+    node_map: Dict[str, str],
+    zone_hints: Optional[Dict[str, str]] = None,
+) -> Dict:
+    """Copy the raw export directory to staging_dir, then apply ALL transforms
+    (GCP cluster rewrite, user remapping, exclude filters) in the staging copy.
+
+    The source export directory is left untouched so the user can compare
+    raw vs. staged before triggering the import.
+
+    Returns the preprocessing summary from the staged directory.
+    """
+    print(f"\n  ── Building staging directory ──────────────────────────────")
+    print(f"  Source  (raw export) : {source_dir}")
+    print(f"  Staging (transformed): {staging_dir}")
+
+    if os.path.exists(staging_dir):
+        print(f"  ⚠  Staging dir already exists — removing and recreating …")
+        shutil.rmtree(staging_dir)
+
+    print(f"  Copying …", end="", flush=True)
+    shutil.copytree(source_dir, staging_dir)
+    print(" done.")
+
+    print(f"  Applying transforms (GCP rewrite + user remapping + excludes) …")
+    summary = preprocess_session(staging_dir, cfg, node_map, zone_hints)
+
+    excluded_jobs     = sum(1 for w in summary.get("all_warnings", []) if w.startswith("EXCLUDED job:"))
+    excluded_clusters = sum(1 for w in summary.get("all_warnings", []) if w.startswith("EXCLUDED cluster:"))
+    total_warnings    = len(summary.get("all_warnings", []))
+
+    print(f"\n  Staging build complete.")
+    print(f"  ── Summary ──────────────────────────────────────────────────")
+    for fname, info in summary.get("transformed", {}).items():
+        print(f"    {fname:<30}  {info.get('count', 0):>5} records"
+              f"  {info.get('warnings', 0):>3} warnings")
+    if excluded_jobs:
+        print(f"  ⊘  {excluded_jobs} job(s) excluded by workspace_excludes.job_name_patterns")
+    if excluded_clusters:
+        print(f"  ⊘  {excluded_clusters} cluster(s) excluded by workspace_excludes.cluster_name_patterns")
+    if total_warnings:
+        print(f"  ⚠  {total_warnings} total warning(s) — see {staging_dir}/gcp_transform_manifest.json")
+    print(f"\n  Review staged files at: {staging_dir}")
+    print(f"  When ready, run import pointing --session to the staging dir.")
+    print()
 
     return summary
 
@@ -849,6 +1029,11 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Transform logs in-place (default: on)")
     act.add_argument("--no-preprocess", dest="preprocess", action="store_false",
                      help="Skip pre-processing (only run --import-extra)")
+    act.add_argument("--build-staging", action="store_true",
+                     help="Copy raw export → staging dir, apply ALL transforms "
+                          "(GCP rewrite, user remapping, exclude filters), then stop. "
+                          "Review staged files before running import. "
+                          "Staging dir defaults to <session_dir>_staging or use --staging-dir.")
     act.add_argument("--import-extra", action="store_true",
                      help="Import components not covered by the migrate tool "
                           "(SQL warehouses, DLT, repos, dashboards, genie, serving). "
@@ -924,11 +1109,18 @@ def main() -> int:
         _LOG.error("Session directory not found: %s", session_dir)
         return 1
 
-    cfg      = load_config(args.config)
-    node_map = load_node_type_mapping(args.mapping)
+    cfg        = load_config(args.config)
+    node_map   = load_node_type_mapping(args.mapping)
     zone_hints = load_zone_hint_mapping(args.mapping)
 
     rc = 0
+
+    # ── --build-staging: copy raw → staging, transform, stop ─────────────────
+    if getattr(args, "build_staging", False):
+        staging_dir = (getattr(args, "staging_dir", None)
+                       or session_dir.rstrip("/\\") + "_staging")
+        build_staging(session_dir, staging_dir, cfg, node_map, zone_hints)
+        return 0
 
     # Initialise structured import log
     import_log_path = os.path.join(session_dir, "import_log.json")
