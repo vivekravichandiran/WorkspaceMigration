@@ -104,19 +104,94 @@ def _db_icon_svg(size: int = 40) -> str:
 
 
 # ---------------------------------------------------------------------------
+# OAuth M2M token helper
+# ---------------------------------------------------------------------------
+
+def _fetch_oauth_token(workspace_url: str, client_id: str, client_secret: str,
+                       verify_ssl: bool = True) -> str:
+    """Exchange client_id + client_secret for a short-lived OAuth Bearer token.
+
+    Uses the Databricks OIDC token endpoint (works on Azure, AWS, GCP).
+    Raises RuntimeError on failure.
+    """
+    token_url = f"{workspace_url.rstrip('/')}/oidc/v1/token"
+    vlog(f"OAuth token request  →  {token_url}", indent=4)
+    try:
+        r = requests.post(
+            token_url,
+            data={
+                "grant_type":    "client_credentials",
+                "client_id":     client_id,
+                "client_secret": client_secret,
+                "scope":         "all-apis",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            verify=verify_ssl,
+            timeout=30,
+        )
+        r.raise_for_status()
+        token = r.json().get("access_token", "")
+        if not token:
+            raise RuntimeError(f"No access_token in response: {r.text[:200]}")
+        expires_in = r.json().get("expires_in", "?")
+        vlog(f"OAuth token obtained  (expires_in={expires_in}s)", indent=4)
+        return token
+    except requests.HTTPError as e:
+        raise RuntimeError(
+            f"OAuth token request failed ({e.response.status_code}): "
+            f"{e.response.text[:300]}"
+        ) from e
+    except Exception as e:
+        raise RuntimeError(f"OAuth token request error: {e}") from e
+
+
+# ---------------------------------------------------------------------------
 # API Client
 # ---------------------------------------------------------------------------
 
 class DatabricksClient:
-    """Thin wrapper around the Databricks REST API."""
+    """Thin wrapper around the Databricks REST API.
 
-    def __init__(self, workspace_url: str, token: str, verify_ssl: bool = True):
-        self.base_url = workspace_url.rstrip("/")
+    Supports two authentication modes:
+      - PAT token  : pass token=<pat>
+      - OAuth M2M  : pass client_id=<id>, client_secret=<secret>
+    """
+
+    def __init__(self, workspace_url: str, token: str = "",
+                 client_id: str = "", client_secret: str = "",
+                 verify_ssl: bool = True):
+        self.base_url  = workspace_url.rstrip("/")
+        self._verify   = verify_ssl
+        self._client_id     = client_id
+        self._client_secret = client_secret
+        self._token_expiry  = 0.0   # epoch seconds when current token expires
+
+        if client_id and client_secret:
+            token = self._refresh_oauth_token()
+        elif not token:
+            raise ValueError("Provide either --token or both --client-id and --client-secret")
+
         self._s = requests.Session()
         self._s.headers.update({"Authorization": f"Bearer {token}"})
         self._s.verify = verify_ssl
 
+    def _refresh_oauth_token(self) -> str:
+        """Fetch a fresh OAuth token and schedule the next refresh."""
+        token = _fetch_oauth_token(
+            self.base_url, self._client_id, self._client_secret, self._verify)
+        # Databricks tokens typically expire in 3600s; refresh 60s early
+        self._token_expiry = time.time() + 3540
+        return token
+
+    def _ensure_token(self):
+        """Re-fetch OAuth token if it is about to expire (M2M mode only)."""
+        if self._client_id and time.time() >= self._token_expiry:
+            vlog("OAuth token expiring — refreshing …", indent=4)
+            new_token = self._refresh_oauth_token()
+            self._s.headers.update({"Authorization": f"Bearer {new_token}"})
+
     def get(self, path: str, params: Optional[Dict] = None) -> Dict:
+        self._ensure_token()
         url = f"{self.base_url}/{path.lstrip('/')}"
         t0 = time.time()
         try:
@@ -1494,7 +1569,16 @@ def main():
     p = argparse.ArgumentParser(
         description="Generate Databricks workspace inventory HTML + Excel reports.")
     p.add_argument("--workspace-url", required=True, help="Databricks workspace URL")
-    p.add_argument("--token",          required=True, help="Personal Access Token")
+
+    # ── Authentication (one of the two groups is required) ────────────────
+    auth = p.add_argument_group(
+        "Authentication (use PAT token OR client credentials)")
+    auth.add_argument("--token", default="",
+                      help="Personal Access Token (PAT)")
+    auth.add_argument("--client-id",     default="",
+                      help="Service Principal / OAuth client ID")
+    auth.add_argument("--client-secret", default="",
+                      help="Service Principal / OAuth client secret")
     p.add_argument("--output", default="",
                    help="Output HTML file path (auto-generated if omitted)")
     p.add_argument("--excel-output", default="",
@@ -1523,6 +1607,13 @@ def main():
 
     if args.verbose:
         vlog.enable()
+
+    # Validate auth args
+    using_oauth = bool(args.client_id or args.client_secret)
+    if using_oauth and not (args.client_id and args.client_secret):
+        p.error("--client-id and --client-secret must both be provided together")
+    if not using_oauth and not args.token:
+        p.error("Provide --token (PAT) or both --client-id and --client-secret")
 
     workspace_url = args.workspace_url.rstrip("/")
     verify_ssl    = not args.no_ssl_verification
@@ -1561,7 +1652,10 @@ def main():
 
     print(f"\n  Databricks Workspace Inventory")
     print(f"  {'─' * 54}")
+    auth_label = "OAuth M2M" if using_oauth else "PAT Token"
     print(f"  Workspace  : {workspace_url}")
+    print(f"  Auth       : {auth_label}"
+          + (f"  (client_id: {args.client_id})" if using_oauth else ""))
     print(f"  HTML       : {html_output}")
     if not args.no_excel:
         print(f"  Excel      : {excel_output}")
@@ -1574,7 +1668,13 @@ def main():
     print(f"  WS API cap : {args.max_ws_api_calls} list calls max")
     print(f"  {'─' * 54}\n")
 
-    client    = DatabricksClient(workspace_url, args.token, verify_ssl=verify_ssl)
+    client = DatabricksClient(
+        workspace_url,
+        token=args.token,
+        client_id=args.client_id,
+        client_secret=args.client_secret,
+        verify_ssl=verify_ssl,
+    )
     inventory = WorkspaceInventory(client, max_scim=args.max_scim,
                                    max_workspace_items=args.max_workspace_items,
                                    max_ws_api_calls=args.max_ws_api_calls)
