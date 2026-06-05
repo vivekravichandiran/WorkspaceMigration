@@ -215,7 +215,7 @@ class DatabricksClient:
 
     def get_paginated(self, path: str, result_key: str,
                       token_key: str = "next_page_token",
-                      max_pages: int = 50) -> List[Dict]:
+                      max_pages: int = 500) -> List[Dict]:
         """Paginate through results using a cursor token."""
         items: List[Dict] = []
         params: Dict[str, Any] = {}
