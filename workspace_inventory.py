@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib3
@@ -202,10 +203,11 @@ class WorkspaceInventory:
     """Fetches all component data from a Databricks workspace."""
 
     def __init__(self, client: DatabricksClient, max_scim: int = 0,
-                 max_workspace_items: int = 0):
+                 max_workspace_items: int = 0, max_ws_api_calls: int = 0):
         self._c = client
-        self._max_scim = max_scim
-        self._max_ws   = max_workspace_items
+        self._max_scim      = max_scim
+        self._max_ws        = max_workspace_items
+        self._max_ws_calls  = max_ws_api_calls
         self._data: Dict[str, Any] = {}
         self.errors: List[str] = []
 
@@ -226,27 +228,68 @@ class WorkspaceInventory:
             self.errors.append(f"{name}: {e}")
             vlog(f"✗  {name:<25}  ERROR: {e}", indent=4)
 
+    # Any path segment matching these names will cause the whole subtree to be skipped.
+    # This prevents recursing into git internals, JS build artifacts, etc.
+    _WS_SKIP_SEGMENTS = {
+        # Git internals
+        ".git", "objects", "refs", "hooks", "info", "pack",
+        # JS / frontend build artifacts
+        "node_modules", ".next", "dist", "build", ".cache",
+        # Python artifacts
+        "__pycache__", ".eggs", "*.egg-info",
+        # Misc
+        ".ipynb_checkpoints", ".venv", "venv", "env",
+    }
+
     def _ws_list_recursive(self, path: str = "/", max_items: int = 0,
+                           max_api_calls: int = 0,
                            _counter: Optional[List[int]] = None) -> List[Dict]:
-        """Recursively list workspace objects up to max_items total."""
+        """Recursively list workspace objects.
+
+        Args:
+            max_items:     Stop after finding this many file/notebook items.
+            max_api_calls: Stop after making this many workspace/list API calls
+                           (limits scan time on workspaces with deep source trees).
+        Both counters are shared across recursion via _counter[items, calls].
+        Skips .git internals, node_modules, and other non-notebook subtrees.
+        """
         if _counter is None:
-            _counter = [0]
-            vlog(f"  workspace scan starting  (max_items={max_items or 'unlimited'})",
+            _counter = [0, 0]  # [items_found, api_calls_made]
+            vlog(f"  workspace scan starting  "
+                 f"(max_items={max_items or '∞'}, "
+                 f"max_api_calls={max_api_calls or '∞'})",
                  indent=8)
         items: List[Dict] = []
+
         if max_items > 0 and _counter[0] >= max_items:
             return items
-        vlog(f"  scanning  {path}  (found {_counter[0]} so far)", indent=8)
+        if max_api_calls > 0 and _counter[1] >= max_api_calls:
+            return items
+
+        # Skip if ANY path segment is a known non-content directory
+        segments = set(path.strip("/").split("/"))
+        if segments & self._WS_SKIP_SEGMENTS:
+            vlog(f"  skipping  {path}  (non-content dir)", indent=8)
+            return items
+
+        vlog(f"  scanning  {path}  (items={_counter[0]}, calls={_counter[1]})",
+             indent=8)
+        _counter[1] += 1
         data = self._c.get("api/2.0/workspace/list", params={"path": path})
         if "_error" in data or "objects" not in data:
             return items
+
         for obj in data.get("objects", []):
             if max_items > 0 and _counter[0] >= max_items:
-                vlog(f"  workspace scan capped at {max_items} items", indent=8)
+                vlog(f"  workspace scan: item cap {max_items} reached", indent=8)
+                break
+            if max_api_calls > 0 and _counter[1] >= max_api_calls:
+                vlog(f"  workspace scan: API call cap {max_api_calls} reached", indent=8)
                 break
             if obj.get("object_type") == "DIRECTORY":
                 items.extend(self._ws_list_recursive(
-                    obj["path"], max_items=max_items, _counter=_counter))
+                    obj["path"], max_items=max_items,
+                    max_api_calls=max_api_calls, _counter=_counter))
             else:
                 items.append(obj)
                 _counter[0] += 1
@@ -261,7 +304,9 @@ class WorkspaceInventory:
             ("users",              lambda: self._c.get_scim("Users", ms)),
             ("groups",             lambda: self._c.get_scim("Groups", ms)),
             ("service_principals", lambda: self._c.get_scim("ServicePrincipals", ms)),
-            ("workspace_items",    lambda: self._ws_list_recursive("/", max_items=mw)),
+            ("workspace_items",    lambda: self._ws_list_recursive(
+                                       "/", max_items=mw,
+                                       max_api_calls=self._max_ws_calls)),
             ("jobs",               lambda: self._c.get_paginated(
                                        "api/2.1/jobs/list", "jobs",
                                        token_key="next_page_token")),
@@ -1313,7 +1358,7 @@ def _render_excel(workspace_url: str, data: Dict[str, Any],
         count      = counts.get(key, 0)
         total     += count
         label      = _LABELS.get(key, key.replace("_", " ").title())
-        sheet_name = label[:31]
+        sheet_name = re.sub(r'[\\/?*\[\]:]', '-', label)[:31]
         bg = _EXCEL_ALT_ROW if row_idx % 2 == 0 else "FFFFFF"
 
         for col_idx, val in enumerate([label, count, sheet_name], 1):
@@ -1363,7 +1408,8 @@ def _render_excel(workspace_url: str, data: Dict[str, Any],
 
         cols       = _COLUMNS.get(key, [("path", "Path", "plain")])
         label      = _LABELS.get(key, key.replace("_", " ").title())
-        sheet_name = label[:31]
+        # Excel sheet names cannot contain: \ / ? * [ ] :
+        sheet_name = re.sub(r'[\\/?*\[\]:]', '-', label)[:31]
         n_cols     = len(cols)
 
         ws2 = wb.create_sheet(title=sheet_name)
@@ -1461,6 +1507,9 @@ def main():
     p.add_argument("--max-workspace-items", type=int, default=0,
                    help="Max workspace notebook/file items to scan "
                         "(0 = unlimited; use e.g. 5000 for large workspaces)")
+    p.add_argument("--max-ws-api-calls", type=int, default=300,
+                   help="Max workspace/list API calls during recursive scan "
+                        "(default: 300; prevents long scans on deep source trees)")
     p.add_argument("--no-ssl-verification", action="store_true",
                    help="Disable SSL certificate verification")
     p.add_argument("--verbose", "-v", action="store_true",
@@ -1492,11 +1541,13 @@ def main():
         print(f"  SCIM limit : {args.max_scim} per type")
     if args.max_workspace_items:
         print(f"  WS items   : {args.max_workspace_items} max")
+    print(f"  WS API cap : {args.max_ws_api_calls} list calls max")
     print(f"  {'─' * 54}\n")
 
     client    = DatabricksClient(workspace_url, args.token, verify_ssl=verify_ssl)
     inventory = WorkspaceInventory(client, max_scim=args.max_scim,
-                                   max_workspace_items=args.max_workspace_items)
+                                   max_workspace_items=args.max_workspace_items,
+                                   max_ws_api_calls=args.max_ws_api_calls)
 
     t0 = time.time()
     data = inventory.fetch_all()
