@@ -1514,6 +1514,11 @@ def main():
                    help="Disable SSL certificate verification")
     p.add_argument("--verbose", "-v", action="store_true",
                    help="Print each API call, pagination page, and timing details")
+    p.add_argument("--log-file", default="",
+                   help="Path to write a log file (auto-generated next to HTML if omitted; "
+                        "use --no-log-file to disable)")
+    p.add_argument("--no-log-file", action="store_true",
+                   help="Disable log file creation")
     args = p.parse_args()
 
     if args.verbose:
@@ -1528,6 +1533,29 @@ def main():
     base_name    = f"inventory_{hostname.split('.')[0]}_{ts_file}"
     html_output  = args.output       or f"{base_name}.html"
     excel_output = args.excel_output or f"{base_name}.xlsx"
+    log_output   = args.log_file     or f"{base_name}.log"
+
+    # ── Tee stdout/stderr to log file ────────────────────────────────────────
+    _log_fh = None
+    if not args.no_log_file:
+        class _Tee:
+            """Write to both the original stream and a log file."""
+            def __init__(self, stream, fh):
+                self._s  = stream
+                self._fh = fh
+            def write(self, data):
+                self._s.write(data)
+                self._fh.write(data)
+                self._fh.flush()
+            def flush(self):
+                self._s.flush()
+                self._fh.flush()
+            def __getattr__(self, name):
+                return getattr(self._s, name)
+
+        _log_fh    = open(log_output, "w", encoding="utf-8")
+        sys.stdout = _Tee(sys.stdout, _log_fh)
+        sys.stderr = _Tee(sys.stderr, _log_fh)
 
     scim_note = f" (capped at {args.max_scim} per type)" if args.max_scim else ""
 
@@ -1537,6 +1565,8 @@ def main():
     print(f"  HTML       : {html_output}")
     if not args.no_excel:
         print(f"  Excel      : {excel_output}")
+    if not args.no_log_file:
+        print(f"  Log        : {log_output}")
     if args.max_scim:
         print(f"  SCIM limit : {args.max_scim} per type")
     if args.max_workspace_items:
@@ -1575,6 +1605,12 @@ def main():
 
     if not args.no_excel:
         _render_excel(workspace_url, data, inventory.errors, ts_display, excel_output)
+
+    if _log_fh:
+        sys.stdout = sys.stdout._s  # restore original stdout
+        sys.stderr = sys.stderr._s
+        _log_fh.close()
+        print(f"  Log file   → {os.path.abspath(log_output)}\n")
 
 
 if __name__ == "__main__":
