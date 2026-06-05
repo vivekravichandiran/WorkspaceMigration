@@ -203,23 +203,55 @@ def remap_user(user: str, cfg: Dict) -> str:
 
 def _remap_users_in_obj(obj: Any, cfg: Dict) -> Any:
     """Recursively walk a JSON object and remap any string values that look like
-    user emails / IDs (fields containing 'user', 'owner', 'creator', 'email',
-    'run_as', 'notification').
+    user emails / IDs across ALL known field names used by Databricks exports.
+
+    Covers: jobs, clusters, ACLs, users, groups, repos, secrets, DLT, warehouses.
     """
     _USER_KEYS = {
+        # Jobs / clusters / pools
         "user_name", "creator_user_name", "run_as_user_name",
-        "owner", "created_by", "email", "value",
-        "notification_email", "email_address",
+        "owner", "created_by",
+        # SCIM users
+        "userName", "value", "display",
+        # Email notifications
+        "email", "notification_email", "email_address",
+        # ACLs
+        "principal", "service_principal_name",
+        # Repos / misc
+        "author", "committer",
     }
     if isinstance(obj, dict):
-        return {
-            k: (remap_user(v, cfg) if k in _USER_KEYS and isinstance(v, str)
-                else _remap_users_in_obj(v, cfg))
-            for k, v in obj.items()
-        }
+        result = {}
+        for k, v in obj.items():
+            if k in _USER_KEYS and isinstance(v, str):
+                result[k] = remap_user(v, cfg)
+            elif k == "display_name" and isinstance(v, str) and "@" in v:
+                # display_name often mirrors the email in ACL entries
+                result[k] = remap_user(v, cfg)
+            else:
+                result[k] = _remap_users_in_obj(v, cfg)
+        return result
     if isinstance(obj, list):
         return [_remap_users_in_obj(item, cfg) for item in obj]
     return obj
+
+
+def _remap_path_user(path: str, cfg: Dict) -> str:
+    """Remap the user portion of workspace paths like /Users/<email>/...
+
+    e.g. /Users/3000818416@mynt.myntra.com/nb  →  /Users/ashi.singhla@myntra.com/nb
+    """
+    if not path or not path.startswith("/Users/"):
+        return path
+    parts = path.split("/", 3)   # ['', 'Users', '<email>', rest...]
+    if len(parts) < 3:
+        return path
+    old_user = parts[2]
+    new_user = remap_user(old_user, cfg)
+    if new_user != old_user:
+        parts[2] = new_user
+        return "/".join(parts)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -783,12 +815,109 @@ def build_staging(
     print(f"  Applying transforms (GCP rewrite + user remapping + excludes) …")
     summary = preprocess_session(staging_dir, cfg, node_map, zone_hints)
 
+    # ── Comprehensive user remapping across ALL exported files ────────────────
+    print(f"  Applying user remapping across ALL exported files …")
+    remap_stats: Dict[str, int] = {}
+
+    def _remap_jsonl_file(path: str, label: str):
+        """Load a JSONL file, remap users in every record, write back."""
+        if not os.path.isfile(path):
+            return
+        records = _read_jsonl(path)
+        remapped = [_remap_users_in_obj(r, cfg) for r in records]
+        _write_jsonl(path, remapped)
+        remap_stats[label] = len(remapped)
+        _LOG.info("  user-remapped %s: %d records", label, len(remapped))
+
+    def _remap_json_file(path: str, label: str):
+        """Load a JSON file (array or object), remap users, write back."""
+        if not os.path.isfile(path):
+            return
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        data = _remap_users_in_obj(data, cfg)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        count = len(data) if isinstance(data, list) else 1
+        remap_stats[label] = count
+        _LOG.info("  user-remapped %s: %d item(s)", label, count)
+
+    # ACL files
+    for fname in ("acl_jobs.log", "acl_clusters.log", "acl_notebooks.log",
+                  "acl_directories.log", "acl_repos.log", "secret_scopes_acls.log"):
+        _remap_jsonl_file(os.path.join(staging_dir, fname), fname)
+
+    # Core export files (users, repos, pools)
+    _remap_jsonl_file(os.path.join(staging_dir, "users.log"),          "users.log")
+    _remap_jsonl_file(os.path.join(staging_dir, "repos.log"),          "repos.log")
+    _remap_jsonl_file(os.path.join(staging_dir, "instance_pools.log"), "instance_pools.log")
+    _remap_jsonl_file(os.path.join(staging_dir, "libraries.log"),      "libraries.log")
+
+    # Workspace path files — also remap /Users/<email>/ path segments
+    for fname in ("user_dirs.log", "user_workspace.log"):
+        path = os.path.join(staging_dir, fname)
+        if os.path.isfile(path):
+            records = _read_jsonl(path)
+            out = []
+            for r in records:
+                r = _remap_users_in_obj(r, cfg)
+                # Also remap path field
+                if "path" in r and isinstance(r["path"], str):
+                    r["path"] = _remap_path_user(r["path"], cfg)
+                out.append(r)
+            _write_jsonl(path, out)
+            remap_stats[fname] = len(out)
+
+    # Groups — each group is a separate file under groups/<name>
+    groups_dir = os.path.join(staging_dir, "groups")
+    if os.path.isdir(groups_dir):
+        group_count = 0
+        for gname in os.listdir(groups_dir):
+            gpath = os.path.join(groups_dir, gname)
+            if os.path.isfile(gpath):
+                try:
+                    with open(gpath, encoding="utf-8") as fh:
+                        gdata = json.load(fh)
+                    gdata = _remap_users_in_obj(gdata, cfg)
+                    with open(gpath, "w", encoding="utf-8") as fh:
+                        json.dump(gdata, fh, indent=2)
+                    group_count += 1
+                except Exception as e:
+                    _LOG.warning("  could not remap group %s: %s", gname, e)
+        remap_stats["groups/*"] = group_count
+
+    # Extra component JSON files (written by export extras)
+    for fname in ("sql_warehouses.json", "dlt_pipelines.json", "repos.json",
+                  "genie_spaces.json", "serving_endpoints.json",
+                  "lakeview_dashboards.json"):
+        _remap_json_file(os.path.join(staging_dir, fname), fname)
+
+    # Lakeview dashboard individual files
+    dashboards_dir = os.path.join(staging_dir, "lakeview_dashboards")
+    if os.path.isdir(dashboards_dir):
+        db_count = 0
+        for fname in os.listdir(dashboards_dir):
+            if fname.endswith(".json"):
+                _remap_json_file(os.path.join(dashboards_dir, fname), fname)
+                db_count += 1
+        if db_count:
+            remap_stats["lakeview_dashboards/*"] = db_count
+
+    # Log remap coverage summary
+    if remap_stats:
+        print(f"  User remapping applied to {len(remap_stats)} file type(s):")
+        for fname, count in sorted(remap_stats.items()):
+            print(f"    {fname:<40}  {count:>5} records")
+    else:
+        print(f"  No extra files found to remap (likely a dry-run or empty export).")
+
+    # ── Final summary ─────────────────────────────────────────────────────────
     excluded_jobs     = sum(1 for w in summary.get("all_warnings", []) if w.startswith("EXCLUDED job:"))
     excluded_clusters = sum(1 for w in summary.get("all_warnings", []) if w.startswith("EXCLUDED cluster:"))
     total_warnings    = len(summary.get("all_warnings", []))
 
     print(f"\n  Staging build complete.")
-    print(f"  ── Summary ──────────────────────────────────────────────────")
+    print(f"  ── Transform summary ────────────────────────────────────────")
     for fname, info in summary.get("transformed", {}).items():
         print(f"    {fname:<30}  {info.get('count', 0):>5} records"
               f"  {info.get('warnings', 0):>3} warnings")
