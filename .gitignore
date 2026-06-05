@@ -1,0 +1,56 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Generated reports & inventory outputs ─────────────────────────────────────
+inventory_*.html
+inventory_*.xlsx
+*_report.html
+comparison_report.html
+
+# ── Logs and run artifacts ────────────────────────────────────────────────────
+logs/
+logs_staging/
+logs_staging_staging/
+
+# ── Secrets / credentials ─────────────────────────────────────────────────────
+*.env
+.env
+secrets.json
+databricks_token*
+
+# ── Large binary / generated assets ──────────────────────────────────────────
+Databricks_Logo.png
+assets/databricks_logo_raw.svg
+
+# ── Temp staging data ─────────────────────────────────────────────────────────
+staged/
+staging/
+
+# ── Third-party subtools (databrickslabs/migrate clone) ───────────────────────
+migrate/

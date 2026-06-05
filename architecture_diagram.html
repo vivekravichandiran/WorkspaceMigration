@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Databricks Workspace Migration Tool – Architecture Design</title>
+<style>
+  /* ── Fonts & Reset ───────────────────────────────────────────── */
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #f7f9fc;
+    color: #1a2332;
+    min-height: 100vh;
+    padding: 40px 32px 80px;
+  }
+
+  /* ── Tokens ──────────────────────────────────────────────────── */
+  :root {
+    --azure:    #0078d4;
+    --azure-lt: #e8f3fc;
+    --azure-md: #b3d7f5;
+    --gcp:      #34a853;
+    --gcp-lt:   #e6f4ea;
+    --gcp-md:   #a8d5b5;
+    --eng:      #f57c00;
+    --eng-lt:   #fff3e0;
+    --eng-md:   #ffcc80;
+    --export:   #1565c0;
+    --export-lt:#e3edf9;
+    --transform:#6a1b9a;
+    --xform-lt: #f3e5f5;
+    --import:   #1b5e20;
+    --import-lt:#e8f5e9;
+    --stage:    #e65100;
+    --stage-lt: #fff8f0;
+    --neutral:  #607d8b;
+    --neut-lt:  #eceff1;
+    --border:   #d0d7de;
+    --shadow:   0 2px 12px rgba(0,0,0,.07);
+    --shadow-lg:0 6px 30px rgba(0,0,0,.10);
+    --radius:   12px;
+  }
+
+  /* ── Page Header ─────────────────────────────────────────────── */
+  .page-header {
+    display: flex; align-items: center; gap: 20px;
+    background: linear-gradient(135deg, #1a2a4a 0%, #2d6a9f 60%, #f57c00 100%);
+    border-radius: 16px; padding: 32px 48px; margin-bottom: 36px;
+    color: #fff;
+  }
+  .page-header .db-icon { flex-shrink: 0; }
+  .page-header h1 { font-size: 28px; font-weight: 800; letter-spacing: -.4px; margin-bottom: 4px; }
+  .page-header p  { font-size: 14px; opacity: .8; font-weight: 400; }
+  .header-meta { display: flex; gap: 24px; margin-top: 12px; flex-wrap: wrap; }
+  .header-badge {
+    background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.25);
+    border-radius: 20px; padding: 4px 14px; font-size: 12px; font-weight: 600;
+    letter-spacing: .3px;
+  }
+
+  /* ── Section Label ───────────────────────────────────────────── */
+  .section-label {
+    font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase;
+    color: var(--neutral); margin-bottom: 16px; display: flex; align-items: center; gap: 8px;
+  }
+  .section-label::after { content:''; flex: 1; height: 1px; background: var(--border); }
+
+  /* ── Main Architecture Flow ──────────────────────────────────── */
+  .arch-flow {
+    display: grid;
+    grid-template-columns: 220px 1fr 220px;
+    gap: 0;
+    align-items: start;
+    margin-bottom: 40px;
+  }
+
+  /* ── Workspace Boxes (Source / Target) ───────────────────────── */
+  .workspace-box {
+    border-radius: var(--radius); padding: 0; overflow: hidden;
+    box-shadow: var(--shadow-lg); position: relative;
+  }
+  .workspace-box .ws-header {
+    padding: 16px 18px 14px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .workspace-box .ws-logo {
+    font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase;
+    opacity: .75; margin-bottom: 2px;
+  }
+  .workspace-box .ws-title { font-size: 15px; font-weight: 700; }
+  .workspace-box .ws-cloud { font-size: 11px; font-weight: 500; opacity: .7; }
+  .workspace-box .ws-components { padding: 12px 18px 20px; }
+  .ws-component {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; border-radius: 7px; margin-bottom: 4px;
+    font-size: 12.5px; font-weight: 500;
+  }
+  .ws-component .icon { font-size: 13px; flex-shrink: 0; }
+
+  /* Source = Azure */
+  .source-box { background: #fff; border: 2px solid var(--azure-md); }
+  .source-box .ws-header { background: var(--azure-lt); border-bottom: 1px solid var(--azure-md); }
+  .source-box .ws-title  { color: var(--azure); }
+  .source-box .ws-cloud  { color: var(--azure); }
+  .source-box .ws-component { background: var(--azure-lt); color: #0a3d6e; }
+
+  /* Target = GCP */
+  .target-box { background: #fff; border: 2px solid var(--gcp-md); }
+  .target-box .ws-header { background: var(--gcp-lt); border-bottom: 1px solid var(--gcp-md); }
+  .target-box .ws-title  { color: var(--gcp); }
+  .target-box .ws-cloud  { color: var(--gcp); }
+  .target-box .ws-component { background: var(--gcp-lt); color: #1a3d22; }
+
+  /* ── Flow Arrows Column ─────────────────────────────────────── */
+  .flow-col {
+    display: flex; flex-direction: column; gap: 12px;
+    padding: 0 16px; position: relative;
+  }
+
+  /* ── Engine Card ─────────────────────────────────────────────── */
+  .engine-card {
+    background: #fff; border-radius: var(--radius);
+    border: 2px solid var(--eng-md); box-shadow: var(--shadow-lg);
+    overflow: hidden;
+  }
+  .engine-header {
+    background: var(--eng-lt); border-bottom: 1px solid var(--eng-md);
+    padding: 14px 18px; display: flex; align-items: center; gap: 10px;
+  }
+  .engine-header h3 { font-size: 13px; font-weight: 700; color: var(--eng); }
+
+  /* Phase cards inside engine */
+  .phases {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;
+    padding: 14px;
+  }
+  .phase-card {
+    border-radius: 10px; padding: 14px 12px; text-align: center;
+    border: 1.5px solid;
+  }
+  .phase-icon { font-size: 22px; margin-bottom: 6px; }
+  .phase-name { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
+  .phase-steps { list-style: none; text-align: left; }
+  .phase-steps li {
+    font-size: 10.5px; padding: 2px 0; display: flex; align-items: flex-start; gap: 4px;
+  }
+  .phase-steps li::before { content: '›'; flex-shrink: 0; font-weight: 700; }
+
+  .phase-export   { background: var(--export-lt); border-color: #90b4e0; }
+  .phase-export .phase-name { color: var(--export); }
+  .phase-export li::before  { color: var(--export); }
+
+  .phase-transform { background: var(--xform-lt); border-color: #ce93d8; }
+  .phase-transform .phase-name { color: var(--transform); }
+  .phase-transform li::before  { color: var(--transform); }
+
+  .phase-import   { background: var(--import-lt); border-color: #a5d6a7; }
+  .phase-import .phase-name { color: var(--import); }
+  .phase-import li::before  { color: var(--import); }
+
+  /* Staging + orchestration row */
+  .infra-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0 14px 14px; }
+  .infra-card {
+    border-radius: 9px; padding: 12px 14px; border: 1.5px solid;
+  }
+  .infra-card h4 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px; }
+  .infra-card ul { list-style: none; }
+  .infra-card ul li { font-size: 10.5px; padding: 2px 0; display: flex; align-items: flex-start; gap: 4px; }
+  .infra-card ul li::before { content: '▸'; flex-shrink: 0; font-weight: 700; }
+
+  .infra-staging   { background: var(--stage-lt); border-color: #ffb74d; }
+  .infra-staging h4 { color: var(--stage); }
+  .infra-staging li::before { color: var(--stage); }
+
+  .infra-orch  { background: var(--neut-lt); border-color: #b0bec5; }
+  .infra-orch h4 { color: var(--neutral); }
+  .infra-orch li::before { color: var(--neutral); }
+
+  /* ── Flow arrow labels between boxes ────────────────────────── */
+  .flow-arrow-wrap {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 0 4px; margin-top: 60px;
+  }
+  .flow-arrow {
+    width: 100%; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  }
+  .arrow-label {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+    padding: 4px 10px; border-radius: 20px; white-space: nowrap;
+  }
+  .arrow-line {
+    width: 100%; height: 3px; border-radius: 2px; position: relative;
+  }
+  .arrow-line::after {
+    content: ''; position: absolute; right: -6px; top: 50%;
+    transform: translateY(-50%);
+    border: 7px solid transparent;
+  }
+  .arrow-export .arrow-label { background: var(--export-lt); color: var(--export); border: 1px solid #90b4e0; }
+  .arrow-export .arrow-line  { background: var(--export); }
+  .arrow-export .arrow-line::after { border-left-color: var(--export); }
+
+  .arrow-import .arrow-label { background: var(--import-lt); color: var(--import); border: 1px solid #a5d6a7; }
+  .arrow-import .arrow-line  { background: var(--gcp); }
+  .arrow-import .arrow-line::after { border-left-color: var(--gcp); }
+
+  /* ── Component Matrix ────────────────────────────────────────── */
+  .matrix-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+    margin-bottom: 40px;
+  }
+  .matrix-group {
+    background: #fff; border-radius: var(--radius);
+    border: 1.5px solid var(--border); box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .matrix-group-header {
+    padding: 10px 16px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .7px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .matrix-group-body { padding: 8px 12px 14px; }
+  .matrix-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px; border-radius: 6px; margin-bottom: 3px;
+    font-size: 12px;
+  }
+  .matrix-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .status-full    .dot { background: #34a853; }
+  .status-manual  .dot { background: #f57c00; }
+  .status-partial .dot { background: #4285f4; }
+
+  /* Group colour themes */
+  .grp-identity .matrix-group-header { background: #e8eaf6; color: #283593; }
+  .grp-compute  .matrix-group-header { background: #e8f5e9; color: #1b5e20; }
+  .grp-workspace.matrix-group-header,
+  .grp-workspace .matrix-group-header { background: #e3f2fd; color: #0d47a1; }
+  .grp-sql      .matrix-group-header { background: #fff8e1; color: #e65100; }
+  .grp-jobs     .matrix-group-header { background: #fce4ec; color: #880e4f; }
+  .grp-security .matrix-group-header { background: #f3e5f5; color: #4a148c; }
+  .grp-data     .matrix-group-header { background: #e0f7fa; color: #006064; }
+  .grp-ai       .matrix-group-header { background: #fffde7; color: #827717; }
+
+  /* ── Data Flow Detail ────────────────────────────────────────── */
+  .flow-table-wrap { background: #fff; border-radius: var(--radius); border: 1.5px solid var(--border); box-shadow: var(--shadow); overflow: hidden; margin-bottom: 40px; }
+  .flow-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .flow-table thead th { background: #f0f4f8; padding: 11px 16px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--neutral); border-bottom: 1.5px solid var(--border); }
+  .flow-table tbody tr:nth-child(even) { background: #fafbfc; }
+  .flow-table tbody td { padding: 10px 16px; vertical-align: top; border-bottom: 1px solid #eef1f4; }
+  .flow-table .phase-pill {
+    display: inline-block; padding: 2px 10px; border-radius: 20px;
+    font-size: 10.5px; font-weight: 600; white-space: nowrap;
+  }
+  .pill-export    { background: var(--export-lt);  color: var(--export); }
+  .pill-transform { background: var(--xform-lt);   color: var(--transform); }
+  .pill-import    { background: var(--import-lt);  color: var(--import); }
+  .pill-staging   { background: var(--stage-lt);   color: var(--stage); }
+  .pill-ok        { background: #e8f5e9; color: #2e7d32; }
+  .pill-manual    { background: #fff3e0; color: #e65100; }
+
+  /* ── Script Reference Box ────────────────────────────────────── */
+  .script-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-bottom: 40px; }
+  .script-card { background: #fff; border: 1.5px solid var(--border); border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow); }
+  .script-card h4 { font-size: 12px; font-weight: 700; color: #1a2332; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+  .script-card .filename { font-size: 11px; font-family: 'SFMono-Regular', Consolas, monospace; background: #f0f4f8; color: #0d47a1; padding: 2px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
+  .script-card p { font-size: 11.5px; color: #546e7a; line-height: 1.55; }
+
+  /* ── Legend ──────────────────────────────────────────────────── */
+  .legend { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; padding: 16px 20px; background: #fff; border: 1.5px solid var(--border); border-radius: var(--radius); margin-bottom: 40px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .legend-dot  { width: 10px; height: 10px; border-radius: 50%; }
+
+  /* ── Footer ──────────────────────────────────────────────────── */
+  footer { text-align: center; font-size: 11px; color: #90a4ae; margin-top: 40px; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════  PAGE HEADER  ════════════════════════ -->
+<div class="page-header">
+  <div class="db-icon">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+      <g transform="matrix(0.75294118,0,0,0.75294118,1.0541175,18.823529)">
+        <path d="M 0,24.8 V 38.5 L 41.1,60 82.2,38.5 v-13.7 L 67.7,17.4 82.2,9.8 V-3.9 L 41.1,-25 0.1,-3.9 H 0 V 9.8 L 14.5,17.4 Z" fill="rgba(255,255,255,0.9)"/>
+        <polygon points="0,60.8 41.1,82.3 82.2,60.8 67.7,53.4 41.1,67.3 14.5,53.4" transform="translate(0,-36)" fill="rgba(255,120,30,0.95)"/>
+        <polygon points="82.2,32.2 41.1,53.7 0,32.2 41.1,11" transform="translate(0,-36)" fill="rgba(255,120,30,0.95)"/>
+      </g>
+    </svg>
+  </div>
+  <div>
+    <h1>Databricks Workspace Migration Tool</h1>
+    <p>End-to-end automated migration of Databricks workspace components across cloud providers</p>
+    <div class="header-meta">
+      <span class="header-badge">☁ Source: Microsoft Azure</span>
+      <span class="header-badge">☁ Target: Google Cloud Platform</span>
+      <span class="header-badge">16 Component Types</span>
+      <span class="header-badge">Python 3 · REST APIs · Shell</span>
+      <span class="header-badge">databrickslabs/migrate + Custom Engine</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════  LEGEND  ════════════════════════════ -->
+<div class="legend">
+  <strong style="font-size:11px;color:#546e7a;text-transform:uppercase;letter-spacing:.6px;margin-right:4px">Legend:</strong>
+  <div class="legend-item"><div class="legend-dot" style="background:#0078d4"></div> Azure Source</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#34a853"></div> GCP Target</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#1565c0"></div> Export Phase</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#6a1b9a"></div> Transform Phase</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#1b5e20"></div> Import Phase</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#e65100"></div> Staging / Logs</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#34a853"></div> Fully Automated</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#f57c00"></div> Manual Step Required</div>
+</div>
+
+<!-- ═══════════════════════  SECTION 1: ARCHITECTURE FLOW  ═══════ -->
+<div class="section-label">① High-Level Architecture Flow</div>
+
+<div class="arch-flow">
+
+  <!-- SOURCE WORKSPACE -->
+  <div class="workspace-box source-box">
+    <div class="ws-header">
+      <div class="ws-logo">☁ Microsoft Azure</div>
+      <div class="ws-title">Source Workspace</div>
+      <div class="ws-cloud">Databricks on Azure</div>
+    </div>
+    <div class="ws-components">
+      <div class="ws-component"><span class="icon">👤</span>Users &amp; Groups</div>
+      <div class="ws-component"><span class="icon">🤖</span>Service Principals</div>
+      <div class="ws-component"><span class="icon">📓</span>Notebooks</div>
+      <div class="ws-component"><span class="icon">📄</span>Workspace Files</div>
+      <div class="ws-component"><span class="icon">⚙</span>Clusters &amp; Pools</div>
+      <div class="ws-component"><span class="icon">⚡</span>Jobs &amp; Workflows</div>
+      <div class="ws-component"><span class="icon">🏭</span>DLT Pipelines</div>
+      <div class="ws-component"><span class="icon">🏢</span>SQL Warehouses</div>
+      <div class="ws-component"><span class="icon">📊</span>AI/BI Dashboards</div>
+      <div class="ws-component"><span class="icon">🧞</span>Genie AI Spaces</div>
+      <div class="ws-component"><span class="icon">🔒</span>Secret Scopes</div>
+      <div class="ws-component"><span class="icon">📦</span>Git Repos</div>
+      <div class="ws-component"><span class="icon">📚</span>DBFS Libraries</div>
+      <div class="ws-component"><span class="icon">🏛</span>Unity Catalog</div>
+      <div class="ws-component"><span class="icon">🚀</span>Model Endpoints</div>
+    </div>
+  </div>
+
+  <!-- MIGRATION ENGINE (centre) -->
+  <div style="padding:0 20px">
+
+    <!-- STEP 0: PRE-EXPORT -->
+    <div style="background:#fff;border:1.5px solid #b3d7f5;border-radius:var(--radius);padding:12px 16px;margin-bottom:14px;box-shadow:var(--shadow)">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#0078d4;margin-bottom:8px">⓪ Pre-Export Inventory</div>
+      <div style="font-size:11.5px;color:#374151;line-height:1.6">
+        <b>workspace_inventory.py</b> connects to the source workspace via REST APIs and generates a self-contained <b>HTML inventory report</b> — summary cards + paginated detail tabs for all 16 component types. Stored in the session log folder as <code style="background:#f0f4f8;padding:1px 5px;border-radius:3px;font-size:10.5px">inventory_pre_export.html</code>.
+      </div>
+    </div>
+
+    <!-- PHASES -->
+    <div class="engine-card" style="margin-bottom:14px">
+      <div class="engine-header">
+        <span style="font-size:18px">⚙</span>
+        <h3>Migration Engine – Three-Phase Pipeline</h3>
+      </div>
+      <div class="phases">
+
+        <!-- EXPORT -->
+        <div class="phase-card phase-export">
+          <div class="phase-icon">📤</div>
+          <div class="phase-name">1 · Export</div>
+          <ul class="phase-steps">
+            <li>REST API calls to source</li>
+            <li>Notebooks (DBC format)</li>
+            <li>Workspace files (binary)</li>
+            <li>Jobs, clusters, pools</li>
+            <li>Warehouses, dashboards</li>
+            <li>Users / groups (SCIM)</li>
+            <li>Secret scope names</li>
+            <li>ACL permissions</li>
+            <li>DBFS library files</li>
+            <li>Git repo metadata</li>
+            <li>Unity Catalog SQL</li>
+            <li>Model endpoints</li>
+          </ul>
+        </div>
+
+        <!-- TRANSFORM -->
+        <div class="phase-card phase-transform">
+          <div class="phase-icon">🔄</div>
+          <div class="phase-name">2 · Transform</div>
+          <ul class="phase-steps">
+            <li>SP reconciliation scan</li>
+            <li>Create SPs on GCP target</li>
+            <li>Patch SP IDs in all files</li>
+            <li>Azure VM → GCP type map</li>
+            <li>Inject gcp_attributes</li>
+            <li>Map availability policy</li>
+            <li>Strip Azure-only fields</li>
+            <li>Warehouse ID mapping</li>
+            <li>Patch genie_spaces.json</li>
+            <li>Remove AWS references</li>
+            <li>Apply node zone hints</li>
+            <li>Pause job schedules</li>
+          </ul>
+        </div>
+
+        <!-- IMPORT -->
+        <div class="phase-card phase-import">
+          <div class="phase-icon">📥</div>
+          <div class="phase-name">3 · Import</div>
+          <ul class="phase-steps">
+            <li>Users / groups (SCIM)</li>
+            <li>Notebooks (migrate tool)</li>
+            <li>Workspace files upload</li>
+            <li>Instance pools first</li>
+            <li>Cluster policies</li>
+            <li>All-purpose clusters</li>
+            <li>Jobs (with pool map)</li>
+            <li>SQL warehouses</li>
+            <li>DLT pipelines</li>
+            <li>AI/BI dashboards</li>
+            <li>Secret scope shells</li>
+            <li>Git repos</li>
+            <li>Model endpoints</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- INFRA ROW -->
+      <div class="infra-row">
+        <div class="infra-card infra-staging">
+          <h4>📁 Staging Directory</h4>
+          <ul>
+            <li>Session ID: <code style="font-size:10px">YYYYMMDDHHMI</code></li>
+            <li>All exported JSON/logs</li>
+            <li>Patched in-place by transform</li>
+            <li>Checkpoints per component</li>
+            <li>Resumable on failure</li>
+            <li>export_status.json</li>
+            <li>gcp_transform_manifest.json</li>
+          </ul>
+        </div>
+        <div class="infra-card infra-orch">
+          <h4>📋 Orchestration</h4>
+          <ul>
+            <li>migrate_workspace.sh (export)</li>
+            <li>import_gcp.sh (import)</li>
+            <li>migration_pipeline.py (DAG)</li>
+            <li>CheckpointService (resume)</li>
+            <li>Session log folder</li>
+            <li>wm_logs.log (unified)</li>
+            <li>HTML reports generated</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- POST-IMPORT REPORTS -->
+    <div style="background:#fff;border:1.5px solid #a5d6a7;border-radius:var(--radius);padding:12px 16px;box-shadow:var(--shadow)">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#1b5e20;margin-bottom:8px">④ Post-Import Reports</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:11px">
+        <div style="background:#e8f5e9;border-radius:7px;padding:8px 10px;text-align:center">
+          <div style="font-size:16px;margin-bottom:4px">📊</div>
+          <div style="font-weight:600;color:#1b5e20">Export Report</div>
+          <div style="color:#546e7a">export_report.html</div>
+        </div>
+        <div style="background:#e8f5e9;border-radius:7px;padding:8px 10px;text-align:center">
+          <div style="font-size:16px;margin-bottom:4px">📋</div>
+          <div style="font-weight:600;color:#1b5e20">Import Report</div>
+          <div style="color:#546e7a">import_report.html</div>
+        </div>
+        <div style="background:#e8f5e9;border-radius:7px;padding:8px 10px;text-align:center">
+          <div style="font-size:16px;margin-bottom:4px">📈</div>
+          <div style="font-weight:600;color:#1b5e20">Comparison</div>
+          <div style="color:#546e7a">comparison_report.html</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- TARGET WORKSPACE -->
+  <div class="workspace-box target-box">
+    <div class="ws-header">
+      <div class="ws-logo">☁ Google Cloud Platform</div>
+      <div class="ws-title">Target Workspace</div>
+      <div class="ws-cloud">Databricks on GCP</div>
+    </div>
+    <div class="ws-components">
+      <div class="ws-component"><span class="icon">👤</span>Users &amp; Groups</div>
+      <div class="ws-component"><span class="icon">🤖</span>Service Principals</div>
+      <div class="ws-component"><span class="icon">📓</span>Notebooks</div>
+      <div class="ws-component"><span class="icon">📄</span>Workspace Files</div>
+      <div class="ws-component"><span class="icon">⚙</span>Clusters &amp; Pools</div>
+      <div class="ws-component"><span class="icon">⚡</span>Jobs &amp; Workflows</div>
+      <div class="ws-component"><span class="icon">🏭</span>DLT Pipelines</div>
+      <div class="ws-component"><span class="icon">🏢</span>SQL Warehouses</div>
+      <div class="ws-component"><span class="icon">📊</span>AI/BI Dashboards</div>
+      <div class="ws-component"><span class="icon">🧞</span>Genie (Manual)</div>
+      <div class="ws-component"><span class="icon">🔒</span>Secret Scopes</div>
+      <div class="ws-component"><span class="icon">📦</span>Git Repos</div>
+      <div class="ws-component"><span class="icon">📚</span>DBFS Libraries</div>
+      <div class="ws-component"><span class="icon">🏛</span>Unity Catalog</div>
+      <div class="ws-component"><span class="icon">🚀</span>Model Endpoints</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════  SECTION 2: COMPONENT MATRIX  ════════ -->
+<div class="section-label">② Component Migration Matrix</div>
+<div class="matrix-grid">
+
+  <!-- Identity -->
+  <div class="matrix-group grp-identity">
+    <div class="matrix-group-header">👤 Identity &amp; Access</div>
+    <div class="matrix-group-body">
+      <div class="matrix-item status-full"><div class="dot"></div>Users (SCIM API)</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Groups (SCIM API)</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Service Principals</div>
+      <div class="matrix-item status-full"><div class="dot"></div>SP App-ID Reconciliation</div>
+    </div>
+  </div>
+
+  <!-- Compute -->
+  <div class="matrix-group grp-compute">
+    <div class="matrix-group-header">⚙ Compute</div>
+    <div class="matrix-group-body">
+      <div class="matrix-item status-full"><div class="dot"></div>All-Purpose Clusters</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Instance Pools</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Cluster Policies</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Node Type Mapping</div>
+      <div class="matrix-item status-full"><div class="dot"></div>GCP Attributes Injection</div>
+    </div>
+  </div>
+
+  <!-- Workspace Content -->
+  <div class="matrix-group">
+    <div class="matrix-group-header" style="background:#e3f2fd;color:#0d47a1">📓 Workspace Content</div>
+    <div class="matrix-group-body">
+      <div class="matrix-item status-full"><div class="dot"></div>Notebooks (DBC)</div>
+      <div class="matrix-item status-full"><div class="dot"></div>.py .sql .md .yaml files</div>
+      <div class="matrix-item status-full"><div class="dot"></div>.json .csv .txt .sh files</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Folder structure preserved</div>
+      <div class="matrix-item status-full"><div class="dot"></div>ACL permissions</div>
+    </div>
+  </div>
+
+  <!-- Jobs -->
+  <div class="matrix-group grp-jobs">
+    <div class="matrix-group-header">⚡ Jobs &amp; Workflows</div>
+    <div class="matrix-group-body">
+      <div class="matrix-item status-full"><div class="dot"></div>Job definitions</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Task dependencies</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Pool ID remapping</div>
+      <div class="matrix-item status-full"><div class="dot"></div>DLT Pipelines</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Schedules (paused)</div>
+    </div>
+  </div>
+
+  <!-- SQL Analytics -->
+  <div class="matrix-group grp-sql">
+    <div class="matrix-group-header">🏢 SQL Analytics</div>
+    <div class="matrix-group-body">
+      <div class="matrix-item status-full"><div class="dot"></div>SQL Warehouses</div>
+      <div class="matrix-item status-full"><div class="dot"></div>AI/BI Dashboards</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Warehouse ID mapping</div>
+      <div class="matrix-item status-manual"><div class="dot"></div>Genie Spaces (manual)</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Genie warehouse resolved</div>
+    </div>
+  </div>
+
+  <!-- Security -->
+  <div class="matrix-group grp-security">
+    <div class="matrix-group-header">🔒 Security &amp; Repos</div>
+    <div class="matrix-group-body">
+      <div class="matrix-item status-full"><div class="dot"></div>Secret Scopes (names)</div>
+      <div class="matrix-item status-manual"><div class="dot"></div>Secret Values (manual)</div>
+      <div class="matrix-item status-full"><div class="dot"></div>Git Repos (Metadata)</div>
+      <div class="matrix-item status-full"><div class="dot"></div>ACL Cluster/Job/NB</div>
+    </div>
+  </div>
+
+  <!-- Data -->
+  <div class="matrix-group grp-data">
+    <div class="matrix-group-header">📚 Data &amp; Storage</div>
+    <div class="matrix-group-body">
+      <div class="matrix-item status-full"><div class="dot"></div>DBFS Library Files</div>
+      <div class="matrix-item status-partial"><div class="dot"></div>Unity Catalog (SQL)</div>
+      <div class="matrix-item status-manual"><div class="dot"></div>Metastore Data (manual)</div>
+    </div>
+  </div>
+
+  <!-- AI/ML -->
+  <div class="matrix-group grp-ai">
+    <div class="matrix-group-header">🚀 AI / ML</div>
+    <div class="matrix-group-body">
+      <div class="matrix-item status-full"><div class="dot"></div>Model Serving Endpoints</div>
+      <div class="matrix-item status-manual"><div class="dot"></div>MLflow Experiments (ext)</div>
+      <div class="matrix-item status-manual"><div class="dot"></div>Registered Models (ext)</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════  SECTION 3: KEY DESIGN DECISIONS  ════ -->
+<div class="section-label">③ Key Design Decisions &amp; Data Flow</div>
+<div class="flow-table-wrap">
+  <table class="flow-table">
+    <thead>
+      <tr>
+        <th>Design Concern</th>
+        <th>Phase</th>
+        <th>Approach</th>
+        <th>Key Files / APIs</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><b>Service Principal IDs</b><br><span style="color:#546e7a;font-size:11px">App IDs differ across clouds</span></td>
+        <td><span class="phase-pill pill-transform">Transform</span></td>
+        <td>Scan all staging files for SP UUIDs → Create SPs on GCP via SCIM → Build old→new map → Patch every JSON file in-place</td>
+        <td><code style="font-size:10.5px">sp_migrator.py</code><br>SCIM /ServicePrincipals</td>
+        <td><span class="phase-pill pill-ok">✓ Automated</span></td>
+      </tr>
+      <tr>
+        <td><b>Node Type Mapping</b><br><span style="color:#546e7a;font-size:11px">Azure VM sizes → GCP types</span></td>
+        <td><span class="phase-pill pill-transform">Transform</span></td>
+        <td>CSV lookup table maps Azure VM SKUs to GCP machine types. Applies to clusters, jobs, pipelines. Optional zone_id hint per type.</td>
+        <td><code style="font-size:10.5px">node_type_mapping.csv</code><br><code style="font-size:10.5px">import_jobs_gcp.py</code></td>
+        <td><span class="phase-pill pill-ok">✓ Automated</span></td>
+      </tr>
+      <tr>
+        <td><b>GCP Attributes</b><br><span style="color:#546e7a;font-size:11px">Cloud-specific cluster config</span></td>
+        <td><span class="phase-pill pill-transform">Transform</span></td>
+        <td>Strip azure_attributes. Inject gcp_attributes with availability (auto-mapped from Azure: ON_DEMAND / SPOT / SPOT_WITH_FALLBACK). Read from gcp_import_config.json.</td>
+        <td><code style="font-size:10.5px">gcp_import_config.json</code><br><code style="font-size:10.5px">import_jobs_gcp.py</code></td>
+        <td><span class="phase-pill pill-ok">✓ Automated</span></td>
+      </tr>
+      <tr>
+        <td><b>Warehouse ID Mapping</b><br><span style="color:#546e7a;font-size:11px">Genie Spaces reference old IDs</span></td>
+        <td><span class="phase-pill pill-transform">Transform</span></td>
+        <td>Extract original warehouse IDs from jdbc_url in sql_warehouses.json. Match by name on GCP target. Create if missing. Patch genie_spaces.json with new IDs.</td>
+        <td><code style="font-size:10.5px">extra_importers.py</code><br>SQL Warehouses API</td>
+        <td><span class="phase-pill pill-ok">✓ Automated</span></td>
+      </tr>
+      <tr>
+        <td><b>Genie Space Migration</b><br><span style="color:#546e7a;font-size:11px">serialized_space not public</span></td>
+        <td><span class="phase-pill pill-import">Import</span></td>
+        <td>Warehouse IDs are resolved and patched automatically. API creation attempted; fails because serialized_space is an internal protobuf. Warning includes correct target warehouse_id for manual UI recreation.</td>
+        <td>POST /api/2.0/genie/spaces<br><code style="font-size:10.5px">extra_importers.py</code></td>
+        <td><span class="phase-pill pill-manual">⚠ Manual UI</span></td>
+      </tr>
+      <tr>
+        <td><b>Instance Pool Ordering</b><br><span style="color:#546e7a;font-size:11px">Clusters/jobs reference pool IDs</span></td>
+        <td><span class="phase-pill pill-import">Import</span></td>
+        <td>Pools imported first. Old pool IDs preserved in instance_pools.log so ClustersClient.get_instance_pool_id_mapping() can build the old→new remapping before clusters/jobs are imported.</td>
+        <td><code style="font-size:10.5px">migration_pipeline.py</code><br>ClustersClient</td>
+        <td><span class="phase-pill pill-ok">✓ Automated</span></td>
+      </tr>
+      <tr>
+        <td><b>Resumable Pipeline</b><br><span style="color:#546e7a;font-size:11px">Partial failures / reruns</span></td>
+        <td><span class="phase-pill pill-staging">Staging</span></td>
+        <td>CheckpointService tracks each completed component. On re-run, already-imported items are skipped. Checkpoints can be manually deleted to force reimport.</td>
+        <td>CheckpointService<br><code style="font-size:10.5px">import_jobs.log</code></td>
+        <td><span class="phase-pill pill-ok">✓ Automated</span></td>
+      </tr>
+      <tr>
+        <td><b>Workspace Files</b><br><span style="color:#546e7a;font-size:11px">Non-notebook file types</span></td>
+        <td><span class="phase-pill pill-export">Export</span></td>
+        <td>Custom exporter walks workspace tree, downloads all FILE-type objects preserving directory structure. Supported: .py .sql .md .yaml .toml .json .csv .txt .sh .mhtml .ipynb</td>
+        <td><code style="font-size:10.5px">workspace_files.py</code><br>GET /api/2.0/workspace/export</td>
+        <td><span class="phase-pill pill-ok">✓ Automated</span></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ═══════════════════════  SECTION 4: KEY SCRIPTS  ════════════ -->
+<div class="section-label">④ Key Scripts &amp; Modules</div>
+<div class="script-grid">
+
+  <div class="script-card">
+    <h4>🚀 Main Export Orchestrator</h4>
+    <div class="filename">migrate_workspace.sh</div>
+    <p>Entry point for export. Generates session ID, runs Step 0 inventory, then orchestrates Python export modules. Writes session banner and export report.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>📥 GCP Import Orchestrator</h4>
+    <div class="filename">import_gcp.sh</div>
+    <p>End-to-end import pipeline: SP migration → GCP transform → databrickslabs/migrate → extra_importers → comparison report. Handles exit code 2 (warnings) gracefully.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>📦 Full Export Engine</h4>
+    <div class="filename">workspace_export/full_export.py</div>
+    <p>Python export engine calling Databricks REST APIs for all 16 component types. Writes export_status.json and generates export_report.html.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>🔄 SP Reconciliation</h4>
+    <div class="filename">workspace_import/sp_migrator.py</div>
+    <p>Scans all staging files for SP app IDs. Creates missing SPs on GCP via SCIM. Patches every reference in JSON exports. Guard against in-place source=staging overwrite.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>🔧 GCP Job Transform</h4>
+    <div class="filename">import_jobs_gcp.py</div>
+    <p>Pre-processes instance_pools.log, clusters.log, jobs.log for GCP. Maps node types via CSV, injects gcp_attributes, strips Azure fields, applies availability mapping.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>📡 Extra Importers</h4>
+    <div class="filename">workspace_import/extra_importers.py</div>
+    <p>Handles 7 components not in databrickslabs/migrate: SQL Warehouses, DLT Pipelines, Git Repos, Lakeview Dashboards, Genie Spaces (with warehouse reconciliation), Model Endpoints, Workspace Files.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>📊 HTML Report Generator</h4>
+    <div class="filename">workspace_import/html_reporter.py</div>
+    <p>Generates self-contained export_report.html and import_report.html with tabbed layout, KPI cards, component tables, paths section and checklist. Embeds Databricks logo.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>📈 Comparison Report</h4>
+    <div class="filename">workspace_import/compare_report.py</div>
+    <p>Side-by-side comparison of exported vs imported component counts. Highlights errors and coverage gaps. Generates comparison_report.html with sortable tables.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>🗂 Workspace Inventory</h4>
+    <div class="filename">workspace_inventory.py</div>
+    <p>Standalone inventory tool using direct REST APIs. Generates inventory_pre_export.html with summary dashboard + 16 detail tabs, each with search, sort and pagination.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>📁 Workspace File Exporter</h4>
+    <div class="filename">workspace_export/exporters/workspace_files.py</div>
+    <p>Downloads all non-notebook workspace files preserving folder hierarchy. Writes workspace_files_manifest.json for import replay.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>📁 Workspace File Importer</h4>
+    <div class="filename">workspace_import/workspace_files_importer.py</div>
+    <p>Reads manifest, creates target directories, uploads files via workspace import API with base64 encoding. Skips existing files unless overwrite=True.</p>
+  </div>
+
+  <div class="script-card">
+    <h4>🎛 Pipeline DAG</h4>
+    <div class="filename">workspace_import/migration_pipeline.py</div>
+    <p>Defines the task dependency graph for the databrickslabs/migrate import pipeline. Ensures instance pools are created before clusters, clusters before jobs.</p>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════  SECTION 5: TECH STACK  ════════════ -->
+<div class="section-label">⑤ Technology Stack</div>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:40px">
+
+  <div style="background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);text-align:center">
+    <div style="font-size:26px;margin-bottom:6px">🐍</div>
+    <div style="font-size:13px;font-weight:700;color:#1a2332">Python 3.6+</div>
+    <div style="font-size:11px;color:#546e7a;margin-top:4px">Core migration engine, exporters, importers, report generators</div>
+  </div>
+
+  <div style="background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);text-align:center">
+    <div style="font-size:26px;margin-bottom:6px">🐚</div>
+    <div style="font-size:13px;font-weight:700;color:#1a2332">Bash / Zsh</div>
+    <div style="font-size:11px;color:#546e7a;margin-top:4px">Orchestration scripts: migrate_workspace.sh, import_gcp.sh</div>
+  </div>
+
+  <div style="background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);text-align:center">
+    <div style="font-size:26px;margin-bottom:6px">🌐</div>
+    <div style="font-size:13px;font-weight:700;color:#1a2332">REST APIs</div>
+    <div style="font-size:11px;color:#546e7a;margin-top:4px">Databricks REST v2.0, SCIM, Lakeview, Genie, Serving</div>
+  </div>
+
+  <div style="background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);text-align:center">
+    <div style="font-size:26px;margin-bottom:6px">📦</div>
+    <div style="font-size:13px;font-weight:700;color:#1a2332">requests</div>
+    <div style="font-size:11px;color:#546e7a;margin-top:4px">HTTP client for all API interactions, PAT token auth</div>
+  </div>
+
+  <div style="background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);text-align:center">
+    <div style="font-size:26px;margin-bottom:6px">📂</div>
+    <div style="font-size:13px;font-weight:700;color:#1a2332">databrickslabs/migrate</div>
+    <div style="font-size:11px;color:#546e7a;margin-top:4px">Core notebooks, clusters, ACLs, users pipeline (open source)</div>
+  </div>
+
+  <div style="background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);text-align:center">
+    <div style="font-size:26px;margin-bottom:6px">🔑</div>
+    <div style="font-size:13px;font-weight:700;color:#1a2332">PAT Auth</div>
+    <div style="font-size:11px;color:#546e7a;margin-top:4px">Personal Access Tokens for source (Azure) and target (GCP)</div>
+  </div>
+
+  <div style="background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);text-align:center">
+    <div style="font-size:26px;margin-bottom:6px">🗃</div>
+    <div style="font-size:13px;font-weight:700;color:#1a2332">JSON / CSV</div>
+    <div style="font-size:11px;color:#546e7a;margin-top:4px">Export format for all metadata. CSV for node type mapping table</div>
+  </div>
+
+  <div style="background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow);text-align:center">
+    <div style="font-size:26px;margin-bottom:6px">📄</div>
+    <div style="font-size:13px;font-weight:700;color:#1a2332">HTML Reports</div>
+    <div style="font-size:11px;color:#546e7a;margin-top:4px">Self-contained single-file HTML with embedded CSS + JS</div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════  SECTION 6: LIMITATIONS  ════════════ -->
+<div class="section-label">⑥ Known Limitations &amp; Manual Steps</div>
+<div style="background:#fff;border:1.5px solid #ffcc80;border-radius:var(--radius);padding:20px 24px;box-shadow:var(--shadow);margin-bottom:40px">
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
+
+    <div style="border-left:3px solid #f57c00;padding-left:14px">
+      <div style="font-weight:700;font-size:13px;color:#e65100;margin-bottom:4px">🧞 Genie AI Spaces</div>
+      <div style="font-size:12px;color:#374151;line-height:1.55">The <code style="font-size:10.5px;background:#f0f4f8;padding:1px 5px;border-radius:3px">serialized_space</code> protobuf field required by the create API is not exposed by any public export endpoint. Warehouse IDs are automatically resolved &amp; patched. Recreation via UI takes ~2 minutes per space.</div>
+    </div>
+
+    <div style="border-left:3px solid #f57c00;padding-left:14px">
+      <div style="font-weight:700;font-size:13px;color:#e65100;margin-bottom:4px">🔑 Secret Values</div>
+      <div style="font-size:12px;color:#374151;line-height:1.55">Secret scope <em>names</em> and ACLs are created automatically. Actual secret <em>values</em> cannot be read via the API (by design). Must be re-inserted manually or via a secrets provisioning tool.</div>
+    </div>
+
+    <div style="border-left:3px solid #f57c00;padding-left:14px">
+      <div style="font-weight:700;font-size:13px;color:#e65100;margin-bottom:4px">🏛 Unity Catalog Data</div>
+      <div style="font-size:12px;color:#374151;line-height:1.55">UC schema / table DDL is exported as SQL files. Underlying data files in object storage are not moved by this tool — requires separate data pipeline or storage migration.</div>
+    </div>
+
+    <div style="border-left:3px solid #f57c00;padding-left:14px">
+      <div style="font-weight:700;font-size:13px;color:#e65100;margin-bottom:4px">🤖 MLflow / Model Registry</div>
+      <div style="font-size:12px;color:#374151;line-height:1.55">MLflow experiments, runs and registered models are not migrated by this tool. Use <code style="font-size:10.5px;background:#f0f4f8;padding:1px 5px;border-radius:3px">mlflow-export-import</code> for fine-grained MLflow migration.</div>
+    </div>
+
+    <div style="border-left:3px solid #f57c00;padding-left:14px">
+      <div style="font-weight:700;font-size:13px;color:#e65100;margin-bottom:4px">📦 Git Repo Contents</div>
+      <div style="font-size:12px;color:#374151;line-height:1.55">Git repo metadata (remote URL, branch, sparse checkout) is migrated. Actual repository data lives in the remote Git provider and is re-cloned by Databricks on first checkout.</div>
+    </div>
+
+    <div style="border-left:3px solid #f57c00;padding-left:14px">
+      <div style="font-weight:700;font-size:13px;color:#e65100;margin-bottom:4px">🌐 Network / Firewall</div>
+      <div style="font-size:12px;color:#374151;line-height:1.55">This tool runs on the operator's machine, not inside the cloud. Both workspace URLs must be reachable. VPN or Direct Connect may be required for private-endpoint workspaces.</div>
+    </div>
+
+  </div>
+</div>
+
+<footer>
+  Databricks Workspace Migration Tool · Architecture Design Document · Generated 2026-04-29 · For internal architecture review
+</footer>
+
+</body>
+</html>

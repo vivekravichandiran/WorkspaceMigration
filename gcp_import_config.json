@@ -1,0 +1,57 @@
+{
+  "_comment": "GCP cluster configuration settings applied during job import. Edit this file to customise target workspace behaviour.",
+
+  "gcp_attributes": {
+    "_comment": "Fallback GCP attributes injected when the source Azure cluster has no explicit availability setting. The 'availability' field is auto-mapped from azure_attributes: ON_DEMAND_AZURE→ON_DEMAND_GCP | SPOT_AZURE→PREEMPTIBLE_GCP | SPOT_WITH_FALLBACK_AZURE→SPOT_WITH_FALLBACK_GCP. Set here only as the default when Azure has no azure_attributes.",
+    "availability": "ON_DEMAND_GCP",
+    "first_on_demand": 1,
+    "local_ssd_count": 0,
+    "zone_id": "auto"
+  },
+
+  "gcp_attributes_optional": {
+    "_comment": "Uncomment / set google_service_account if your cluster needs GCS access via a service account.",
+    "google_service_account": null,
+    "boot_disk_size": null
+  },
+
+  "fields_to_remove_from_cluster": [
+    "azure_attributes",
+    "aws_attributes",
+    "enable_elastic_disk",
+    "instance_profile_arn",
+    "ebs_volume_type",
+    "ebs_volume_count",
+    "ebs_volume_size",
+    "ebs_volume_iops",
+    "ebs_volume_throughput"
+  ],
+
+  "fields_to_remove_from_job": [
+    "created_time",
+    "run_as_user_name"
+  ],
+
+  "cluster_name_transforms": {
+    "_comment": "Applied to cluster_name and creator_user_name fields in every cluster spec.",
+    "replace_at_with": "_",
+    "remove_apostrophes": true,
+    "replace_spaces_with": "_"
+  },
+
+  "job_name_suffix": {
+    "_comment": "The migrate tool appends :::JOB_ID to job names.  Set strip_id_suffix=true to remove it.",
+    "strip_id_suffix": true,
+    "suffix_separator": ":::"
+  },
+
+  "schedule_behaviour": {
+    "_comment": "Imported jobs' schedules are set to PAUSED by default to avoid unintended runs in target.",
+    "set_pause_status": "PAUSED"
+  },
+
+  "email_notifications": {
+    "_comment": "Set clear_on_import=true to strip all email notification addresses from imported jobs.",
+    "clear_on_import": false
+  }
+}

@@ -1,0 +1,2 @@
+class RestException(Exception):
+    pass
