@@ -425,25 +425,27 @@ if $DEBUG;       then PYTHON_ARGS+=(--debug); fi
 [[ ${#SKIP_COMPONENTS[@]} -gt 0 ]] && PYTHON_ARGS+=(--skip "${SKIP_COMPONENTS[@]}") || true
 
 # ── Step 0: Pre-export workspace inventory ────────────────────────────────────
-header "Step 0 of 2 – Pre-Export Workspace Inventory"
+header "Step 0 of 3 – Pre-Export Workspace Inventory"
 info  "Snapshotting all workspace components before export …"
-INVENTORY_FILE="${SESSION_EXPORT_DIR}/inventory_pre_export.html"
+INVENTORY_HTML="${SESSION_EXPORT_DIR}/inventory_pre_export.html"
+INVENTORY_XLSX="${SESSION_EXPORT_DIR}/inventory_pre_export.xlsx"
 INVENTORY_ARGS=(
     --workspace-url "$WORKSPACE_URL"
     --token         "$PAT_TOKEN"
-    --output        "$INVENTORY_FILE"
+    --output        "$INVENTORY_HTML"
+    --excel-output  "$INVENTORY_XLSX"
 )
 # Note: PAT_TOKEN is already populated (either directly or via OAuth exchange)
 $NO_SSL && INVENTORY_ARGS+=(--no-ssl-verification)
 if python3 "${SCRIPT_DIR}/workspace_inventory.py" "${INVENTORY_ARGS[@]}"; then
-    success "Inventory complete → ${INVENTORY_FILE}"
+    success "Inventory complete → ${INVENTORY_HTML}"
 else
     warn "Inventory step failed (non-fatal) – export will continue."
 fi
 echo ""
 
 # ── Run export ────────────────────────────────────────────────────────────────
-header "Step 1 of 2 – Export"
+header "Step 1 of 3 – Export"
 STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 info "Started at: $STARTED_AT"
 echo ""
@@ -559,7 +561,34 @@ else
 fi
 echo ""
 
-# ── Generate HTML export report ───────────────────────────────────────────────
+# ── Step 3 of 3: Staging diff report (pre/post change review) ─────────────────
+# Generates a full HTML + Excel diff of every transformation applied during
+# staging: user remapping, node-type mapping, GCP attribute injection,
+# spark-config rewrites, job transforms, ACL changes, etc.
+# ──────────────────────────────────────────────────────────────────────────────
+STAGING_DIFF_HTML="${SESSION_EXPORT_DIR}/staging_diff_${SESSION_ID}.html"
+STAGING_DIFF_XLSX="${SESSION_EXPORT_DIR}/staging_diff_${SESSION_ID}.xlsx"
+if [[ -d "${SESSION_EXPORT_DIR}" && -d "${STAGING_DIR}" ]]; then
+    header "Step 3 of 3 – Staging Diff Report (pre/post changes)"
+    info  "Comparing raw export vs staged files …"
+    info  "  Raw   : ${SESSION_EXPORT_DIR}"
+    info  "  Stage : ${STAGING_DIR}"
+    DIFF_EXIT=0
+    python3 "${SCRIPT_DIR}/staging_diff_report.py" \
+        --raw-dir     "${SESSION_EXPORT_DIR}" \
+        --stage-dir   "${STAGING_DIR}" \
+        --html-output "${STAGING_DIFF_HTML}" \
+        --excel-output "${STAGING_DIFF_XLSX}" \
+        || DIFF_EXIT=$?
+    if [[ $DIFF_EXIT -eq 0 ]]; then
+        success "Staging diff report generated."
+    else
+        warn "Staging diff report failed (non-fatal)."
+        STAGING_DIFF_HTML=""
+        STAGING_DIFF_XLSX=""
+    fi
+    echo ""
+fi
 info "Generating HTML export report …"
 HTML_EXPORT_REPORT="${SESSION_EXPORT_DIR}/export_report.html"
 PYTHONPATH="${MIGRATE_REPO_DIR}:${SCRIPT_DIR}/stubs" \
@@ -575,19 +604,28 @@ print(path)
 
 echo ""
 echo "  ── Output files ─────────────────────────────────────────"
-if [[ -f "${INVENTORY_FILE}" ]]; then
-    echo "  🗂️  Pre-export inventory : ${INVENTORY_FILE}"
+if [[ -f "${INVENTORY_HTML}" ]]; then
+    echo "  🗂️  Inventory HTML   : ${INVENTORY_HTML}"
 fi
-echo "  📋 Text report  : ${REPORT_FILE}"
+if [[ -f "${INVENTORY_XLSX}" ]]; then
+    echo "  🗂️  Inventory Excel  : ${INVENTORY_XLSX}"
+fi
+echo "  📋 Export text     : ${REPORT_FILE}"
 if [[ -f "${HTML_EXPORT_REPORT}" ]]; then
-    echo "  📊 HTML report  : ${HTML_EXPORT_REPORT}"
+    echo "  📊 Export HTML     : ${HTML_EXPORT_REPORT}"
 fi
 if [[ -d "${STAGING_DIR}" ]]; then
-    echo "  📦 Staged files : ${STAGING_DIR}   ← review here before import"
+    echo "  📦 Staged files    : ${STAGING_DIR}   ← review here before import"
+fi
+if [[ -f "${STAGING_DIFF_HTML:-}" ]]; then
+    echo "  🔍 Staging diff HTML  : ${STAGING_DIFF_HTML}"
+fi
+if [[ -f "${STAGING_DIFF_XLSX:-}" ]]; then
+    echo "  🔍 Staging diff Excel : ${STAGING_DIFF_XLSX}"
 fi
 echo ""
 echo "  ── Next step ────────────────────────────────────────────"
-echo "  Review staging dir, then run:"
+echo "  Review staging dir and staging diff report, then run:"
 echo "  ./import_gcp.sh --workspace-url <TARGET_URL> --token <PAT> --session ${SESSION_ID}"
 echo ""
 exit $EXPORT_EXIT
