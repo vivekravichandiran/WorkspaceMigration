@@ -112,7 +112,7 @@ def load_node_type_mapping(path: str) -> Dict[str, str]:
             parts = line.split(",")
             if len(parts) >= 2:
                 src, dst = parts[0].strip(), parts[1].strip()
-                if src and dst and not src.startswith("#"):
+                if src and dst and not src.startswith("#") and src.lower() != "source_node_type":
                     mapping[src.lower()] = dst
     _LOG.info("Loaded %d node-type mappings", len(mapping))
     return mapping
