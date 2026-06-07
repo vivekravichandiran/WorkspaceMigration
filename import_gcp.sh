@@ -52,6 +52,8 @@
 #   --delete-existing-jobs Delete all jobs on target workspace before importing (step 1.6)
 #   --force                Skip confirmation prompt for --delete-existing-jobs
 #   --include-mlflow       Step 2: include MLflow in the migrate tool import
+#   --folders-only         Step 2: create workspace folder skeleton only (no notebook/file content)
+#   --folders-only         Create workspace folder skeleton only (no notebook content)
 #   --no-ssl-verification  Disable SSL certificate verification
 #   --debug                Enable verbose debug logging
 #   -h, --help             Show this help
@@ -92,6 +94,7 @@ NODE_MAPPING="node_type_mapping.csv"
 SKIP_STEPS=()
 DRY_RUN=false
 INCLUDE_MLFLOW=false
+FOLDERS_ONLY=false
 NO_SSL=false
 DEBUG=false
 DELETE_JOBS=false
@@ -111,6 +114,7 @@ while [[ $# -gt 0 ]]; do
         --mapping)             NODE_MAPPING="$2";            shift 2 ;;
         --skip-step)           SKIP_STEPS+=("$2");           shift 2 ;;
         --dry-run)             DRY_RUN=true;                 shift   ;;
+        --folders-only)        FOLDERS_ONLY=true;            shift   ;;
         --include-mlflow)      INCLUDE_MLFLOW=true;          shift   ;;
         --delete-existing-jobs) DELETE_JOBS=true;            shift   ;;
         --force)               FORCE_DELETE=true;            shift   ;;
@@ -317,6 +321,30 @@ fi
 # ── Step 2: Migrate tool import ───────────────────────────────────────────────
 if $_SKIP_STEP2; then
     log_warn "Step 2 (Migrate tool import) skipped by --skip-step 2"
+elif $FOLDERS_ONLY; then
+    log_step "Step 2 of 4 – Folders-Only Import (no notebook content)"
+    log_info "Creating workspace directory skeleton on target …"
+    log_info "  Reading  : ${ACTIVE_SESSION_DIR}/user_dirs.log + user_workspace.log"
+    log_info "  Target   : ${WORKSPACE_URL}"
+    log_info "  Dry run  : ${DRY_RUN}"
+
+    FOLDERS_ARGS=(
+        --workspace-url "$WORKSPACE_URL"
+        --token         "$PAT_TOKEN"
+        --session       "$SESSION_ID"
+        --export-dir    "$ACTIVE_EXPORT_BASE"
+        --import-folders-only
+        --no-preprocess
+    )
+    $DRY_RUN && FOLDERS_ARGS+=(--dry-run) || true
+    $NO_SSL  && FOLDERS_ARGS+=($SSL_FLAG) || true
+    $DEBUG   && FOLDERS_ARGS+=(--debug)   || true
+
+    PYTHONPATH="${SCRIPT_DIR}:${MIGRATE_REPO_DIR}" \
+        "$PYTHON3" "${SCRIPT_DIR}/import_jobs_gcp.py" "${FOLDERS_ARGS[@]}" \
+        || log_warn "Some folders could not be created (see output above)."
+
+    log_info "Folder skeleton import complete."
 else
     log_step "Step 2 of 4 – databrickslabs/migrate Import Pipeline"
     log_info "Running migration_pipeline.py --import-pipeline …"

@@ -1135,6 +1135,122 @@ def _import_extra_components(
 
 
 # ---------------------------------------------------------------------------
+# Folders-only import
+# ---------------------------------------------------------------------------
+
+def import_folders_only(
+    session_dir: str,
+    workspace_url: str,
+    token: str,
+    cfg: Dict,
+    verify_ssl: bool = True,
+    dry_run: bool = False,
+) -> Dict:
+    """Create workspace folder skeleton on the target without importing any
+    notebook or file content.
+
+    Reads directory paths from ``user_dirs.log`` and ``user_workspace.log``,
+    applies user-path remapping and exclude filters from *cfg*, then calls
+    ``POST /api/2.0/workspace/mkdirs`` for each surviving path.
+
+    Returns a summary dict with keys: total, created, skipped, failed, errors.
+    """
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    base_url = workspace_url.rstrip("/")
+    mkdirs_url = f"{base_url}/api/2.0/workspace/mkdirs"
+
+    # ── 1. Collect all directory paths ───────────────────────────────────────
+    paths: List[str] = []
+    for fname in ("user_dirs.log", "user_workspace.log"):
+        fpath = os.path.join(session_dir, fname)
+        if not os.path.isfile(fpath):
+            continue
+        for rec in _read_jsonl(fpath):
+            p = rec.get("path", "")
+            if p:
+                paths.append(p)
+
+    # De-duplicate, apply path remapping, apply exclude filter
+    seen: set = set()
+    filtered: List[str] = []
+    for p in paths:
+        p = _remap_path_user(p, cfg)
+        if p in seen:
+            continue
+        seen.add(p)
+        if should_exclude(p, cfg, kind="path"):
+            _LOG.info("  EXCLUDED folder: %s", p)
+            continue
+        filtered.append(p)
+
+    # Sort so parent directories are always created before children
+    filtered.sort()
+
+    print(f"\n{'[DRY RUN] ' if dry_run else ''}Creating workspace folder skeleton")
+    print(f"  Source session : {session_dir}")
+    print(f"  Target         : {workspace_url}")
+    print(f"  Total folders  : {len(filtered)}")
+    print()
+
+    created = skipped = failed = 0
+    errors: List[str] = []
+
+    for p in filtered:
+        if dry_run:
+            print(f"  [dry-run] mkdirs {p}")
+            created += 1
+            continue
+        try:
+            resp = requests.post(
+                mkdirs_url,
+                headers=headers,
+                json={"path": p},
+                verify=verify_ssl,
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                created += 1
+                _LOG.info("  ✓ mkdirs %s", p)
+            elif resp.status_code in (400, 409):
+                # RESOURCE_ALREADY_EXISTS or already a directory — not an error
+                skipped += 1
+                _LOG.debug("  already exists: %s", p)
+            else:
+                failed += 1
+                msg = f"mkdirs {p} → HTTP {resp.status_code}: {resp.text[:120]}"
+                errors.append(msg)
+                _LOG.warning("  ✗ %s", msg)
+        except Exception as exc:
+            failed += 1
+            msg = f"mkdirs {p} → {exc}"
+            errors.append(msg)
+            _LOG.warning("  ✗ %s", msg)
+
+    total = len(filtered)
+    print(f"\n  Folders-only import {'(dry run) ' if dry_run else ''}complete:")
+    print(f"    Total   : {total}")
+    print(f"    Created : {created}")
+    print(f"    Skipped (already exist) : {skipped}")
+    if failed:
+        print(f"    Failed  : {failed}")
+        for e in errors[:10]:
+            print(f"      ✗ {e}")
+        if len(errors) > 10:
+            print(f"      … and {len(errors) - 10} more")
+
+    return {
+        "total": total,
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+        "errors": errors,
+    }
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -1176,6 +1292,12 @@ def _build_parser() -> argparse.ArgumentParser:
                           "(GCP rewrite, user remapping, exclude filters), then stop. "
                           "Review staged files before running import. "
                           "Staging dir defaults to <session_dir>_staging or use --staging-dir.")
+    act.add_argument("--import-folders-only", action="store_true",
+                     help="Create workspace folder skeleton on target without importing "
+                          "any notebook or file content. Reads user_dirs.log + "
+                          "user_workspace.log, applies user-path remapping and exclude "
+                          "filters, then calls workspace/mkdirs for every directory. "
+                          "Requires --workspace-url and --token.")
     act.add_argument("--import-extra", action="store_true",
                      help="Import components not covered by the migrate tool "
                           "(SQL warehouses, DLT, repos, dashboards, genie, serving). "
@@ -1263,6 +1385,21 @@ def main() -> int:
                        or session_dir.rstrip("/\\") + "_staging")
         build_staging(session_dir, staging_dir, cfg, node_map, zone_hints)
         return 0
+
+    # ── --import-folders-only: mkdirs skeleton, no content ───────────────────
+    if getattr(args, "import_folders_only", False):
+        if not args.workspace_url or not args.token:
+            _LOG.error("--import-folders-only requires --workspace-url and --token")
+            return 1
+        result = import_folders_only(
+            session_dir=session_dir,
+            workspace_url=args.workspace_url,
+            token=args.token,
+            cfg=cfg,
+            verify_ssl=not args.no_ssl_verification,
+            dry_run=args.dry_run,
+        )
+        return 1 if result.get("failed", 0) > 0 else 0
 
     # Initialise structured import log
     import_log_path = os.path.join(session_dir, "import_log.json")

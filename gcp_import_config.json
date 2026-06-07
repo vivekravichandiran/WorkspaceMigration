@@ -6,7 +6,9 @@
     "path_patterns": [
       "^/Users/svc-.*",
       ".*\\.bak$",
-      "^/Shared/archive/.*"
+      "^/Shared/archive/.*",
+      ".*/\\_copy(/.*)?$",
+      ".*/\\_deployed(/.*)?$"
     ],
     "job_name_patterns": [
       ".*\\[DEPRECATED\\].*",
