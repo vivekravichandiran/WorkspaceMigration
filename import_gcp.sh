@@ -38,13 +38,16 @@
 # Usage:
 #   ./import_gcp.sh \
 #       --workspace-url https://XXXXXXXX.gcp.databricks.com \
-#       --token dapi... \
+#       --client-id     <SERVICE_PRINCIPAL_CLIENT_ID>        \
+#       --client-secret <SERVICE_PRINCIPAL_CLIENT_SECRET>    \
 #       --profile DST_GCP_PROFILE \
 #       --session EXPORT_202604281109
 #
 # Quick reference:
 #   --workspace-url  URL   Target GCP workspace URL (required)
-#   --token          PAT   Personal Access Token for GCP workspace (required)
+#   --client-id      ID    OAuth Service Principal client ID (recommended)
+#   --client-secret  SEC   OAuth Service Principal client secret (recommended)
+#   --token          PAT   Personal Access Token (legacy / fallback)
 #   --profile        NAME  Databricks CLI profile for the migrate tool (required)
 #   --session        ID    Export session ID (required)
 #   --export-dir     DIR   Base export dir (default: ./logs)
@@ -88,6 +91,8 @@ log_step()  { echo -e "\n${BOLD}${CYAN}═════════════�
 # ── Defaults ──────────────────────────────────────────────────────────────────
 WORKSPACE_URL=""
 PAT_TOKEN=""
+CLIENT_ID=""
+CLIENT_SECRET=""
 CLI_PROFILE=""
 SESSION_ID=""
 EXPORT_DIR="logs"
@@ -110,6 +115,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -u|--workspace-url)    WORKSPACE_URL="$2";        shift 2 ;;
         -t|--token)            PAT_TOKEN="$2";             shift 2 ;;
+        --client-id)           CLIENT_ID="$2";             shift 2 ;;
+        --client-secret)       CLIENT_SECRET="$2";         shift 2 ;;
         -p|--profile)          CLI_PROFILE="$2";           shift 2 ;;
         -s|--session)          SESSION_ID="$2";             shift 2 ;;
         -d|--export-dir)       EXPORT_DIR="$2";             shift 2 ;;
@@ -144,8 +151,35 @@ for s in "${SKIP_STEPS[@]+"${SKIP_STEPS[@]}"}"; do
 done
 
 [[ -z "$WORKSPACE_URL" ]] && { log_error "--workspace-url is required"; exit 1; }
-[[ -z "$PAT_TOKEN"     ]] && { log_error "--token is required"; exit 1; }
-[[ -z "$SESSION_ID"    ]] && { log_error "--session is required"; exit 1; }
+[[ -z "$SESSION_ID"    ]] && { log_error "--session is required";       exit 1; }
+
+# Require either --token (PAT) or --client-id + --client-secret (OAuth M2M)
+if [[ -z "$PAT_TOKEN" && ( -z "$CLIENT_ID" || -z "$CLIENT_SECRET" ) ]]; then
+    log_error "Authentication required: provide --client-id + --client-secret (OAuth M2M, recommended) or --token (PAT)"
+    exit 1
+fi
+if [[ -n "$CLIENT_ID" && -z "$CLIENT_SECRET" ]]; then
+    log_error "--client-secret is required when --client-id is provided"; exit 1
+fi
+if [[ -z "$CLIENT_ID" && -n "$CLIENT_SECRET" ]]; then
+    log_error "--client-id is required when --client-secret is provided"; exit 1
+fi
+
+# ── OAuth token exchange ───────────────────────────────────────────────────────
+if [[ -z "$PAT_TOKEN" && -n "$CLIENT_ID" ]]; then
+    log_info "Fetching OAuth token for client_id: ${CLIENT_ID} …"
+    _ssl_flag=""; $NO_SSL && _ssl_flag="-k"
+    _resp=$(curl -s $_ssl_flag -X POST "${WORKSPACE_URL}/oidc/v1/token" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&scope=all-apis")
+    PAT_TOKEN=$(echo "$_resp" | python3 -c \
+        "import sys,json; d=json.load(sys.stdin); print(d.get('access_token',''))" 2>/dev/null || true)
+    if [[ -z "$PAT_TOKEN" ]]; then
+        log_error "OAuth token exchange failed. Response: ${_resp}"
+        exit 1
+    fi
+    log_info "OAuth token obtained (expires in ~3600s)"
+fi
 
 # Resolve EXPORT_DIR to absolute path so sub-processes run from other dirs work correctly
 EXPORT_DIR="$(cd "$EXPORT_DIR" 2>/dev/null && pwd)" || { log_error "Export dir not found: ${EXPORT_DIR}"; exit 1; }

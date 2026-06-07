@@ -10,21 +10,18 @@
 #   3. Install Python dependencies
 #   4. Copy this project's utility modules into the migrate repo
 #   5. Run the full workspace export with live status tracking
-#   6. Print a detailed report when complete
+#   6. Generate inventory, export HTML, staging diff reports
 #
-# Usage:
-#   ./migrate_workspace.sh --workspace-url <URL> --token <PAT> [OPTIONS]
+# Authentication — use OAuth M2M (recommended):
+#   ./migrate_workspace.sh \
+#       --workspace-url https://my-ws.azuredatabricks.net \
+#       --client-id     <SERVICE_PRINCIPAL_CLIENT_ID>    \
+#       --client-secret <SERVICE_PRINCIPAL_CLIENT_SECRET>
 #
-# Positional shorthand:
-#   ./migrate_workspace.sh <workspace_url> <pat_token>
-#
-# Examples:
+# Authentication — PAT token (legacy / fallback):
 #   ./migrate_workspace.sh \
 #       --workspace-url https://my-ws.azuredatabricks.net \
 #       --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-#
-#   ./migrate_workspace.sh https://my-ws.azuredatabricks.net dapiXXX \
-#       --azure --num-parallel 8 --skip mlflow_runs
 # =============================================================================
 
 set -euo pipefail
@@ -74,16 +71,19 @@ cat <<EOF
 ${BOLD}migrate_workspace.sh${RESET} – Self-bootstrapping Databricks workspace export
 
 ${BOLD}USAGE${RESET}
-  ./migrate_workspace.sh --workspace-url <URL> --token <PAT> [OPTIONS]
-  ./migrate_workspace.sh <workspace_url> <pat_token> [OPTIONS]   # positional
+  ./migrate_workspace.sh --workspace-url <URL> --client-id <ID> --client-secret <SECRET> [OPTIONS]
+  ./migrate_workspace.sh --workspace-url <URL> --token <PAT> [OPTIONS]   # PAT fallback
 
 ${BOLD}REQUIRED${RESET}
   -u, --workspace-url URL    Databricks workspace URL (https://...)
 
-${BOLD}AUTHENTICATION (one of the following)${RESET}
+${BOLD}AUTHENTICATION — OAuth M2M (recommended)${RESET}
+      --client-id ID         Service Principal OAuth client ID
+      --client-secret SECRET Service Principal OAuth client secret
+      (The script exchanges these for a short-lived access token automatically.)
+
+${BOLD}AUTHENTICATION — PAT token (legacy / fallback)${RESET}
   -t, --token PAT            Personal Access Token (dapi...)
-      --client-id ID         OAuth Service Principal client ID
-      --client-secret SECRET OAuth Service Principal client secret
 
 ${BOLD}EXPORT OPTIONS${RESET}
   -s, --session ID           Session identifier (auto-generated if omitted)
@@ -209,7 +209,7 @@ validate_args() {
     [[ -n "$CLIENT_ID" && -n "$CLIENT_SECRET" ]] && has_oauth=true
 
     if ! $has_pat && ! $has_oauth; then
-        error "Provide --token (PAT) or both --client-id and --client-secret"
+        error "Authentication required: provide --client-id + --client-secret (OAuth M2M, recommended) or --token (PAT)"
         (( errs++ )) || true
     fi
     if [[ -n "$CLIENT_ID" && -z "$CLIENT_SECRET" ]]; then
@@ -526,7 +526,7 @@ fi
 
 echo ""
 info "To regenerate this report later:"
-info "  ./migrate_workspace.sh --workspace-url $WORKSPACE_URL --token <PAT> --session $SESSION_ID --report-only"
+info "  ./migrate_workspace.sh --workspace-url $WORKSPACE_URL --client-id <ID> --client-secret <SECRET> --session $SESSION_ID --report-only"
 echo ""
 
 # ── Step 2 of 3: Auto-staging ─────────────────────────────────────────────────
@@ -626,6 +626,6 @@ fi
 echo ""
 echo "  ── Next step ────────────────────────────────────────────"
 echo "  Review staging dir and staging diff report, then run:"
-echo "  ./import_gcp.sh --workspace-url <TARGET_URL> --token <PAT> --session ${SESSION_ID}"
+echo "  ./import_gcp.sh --workspace-url <TARGET_URL> --client-id <ID> --client-secret <SECRET> --session ${SESSION_ID}"
 echo ""
 exit $EXPORT_EXIT

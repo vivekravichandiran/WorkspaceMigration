@@ -14,7 +14,14 @@ export SESSION="EXPORT_20260607"          # your export session ID
 export STAGING="logs_staging"             # staging base dir (from build-staging step)
 export PROFILE="ocm-gcp-dst"             # Databricks CLI profile for target GCP workspace
 export GCP_URL="https://8259561172954120.0.gcp.databricks.com"
-export TOKEN="dapi<YOUR_GCP_PAT_TOKEN>"
+
+# Authentication — OAuth M2M (recommended)
+export CLIENT_ID="<SERVICE_PRINCIPAL_CLIENT_ID>"
+export CLIENT_SECRET="<SERVICE_PRINCIPAL_CLIENT_SECRET>"
+
+# Authentication — PAT token (legacy / fallback)
+# export TOKEN="dapi<YOUR_GCP_PAT_TOKEN>"
+
 export MIGRATE_DIR="$HOME/.databricks-migrate"
 ```
 
@@ -287,7 +294,8 @@ Run this **before** `migration_pipeline.py`:
 # Step 1.7: delete named jobs from target so they are re-created fresh
 python3 import_jobs_gcp.py \
   --workspace-url $GCP_URL \
-  --token         $TOKEN   \
+  --client-id     $CLIENT_ID      \
+  --client-secret $CLIENT_SECRET  \
   --config        gcp_import_config.json \
   --force-recreate-jobs
 
@@ -304,7 +312,8 @@ Or run the full `import_gcp.sh` with `--force-recreate-jobs` to handle both step
 ```bash
 ./import_gcp.sh \
   --workspace-url $GCP_URL \
-  --token         $TOKEN   \
+  --client-id     $CLIENT_ID      \
+  --client-secret $CLIENT_SECRET  \
   --profile       $PROFILE \
   --session       $SESSION \
   --force-recreate-jobs
@@ -357,7 +366,8 @@ python3 $MIGRATE_DIR/migration_pipeline.py \
 ```bash
 python3 import_jobs_gcp.py \
   --workspace-url $GCP_URL \
-  --token         $TOKEN   \
+  --client-id     $CLIENT_ID      \
+  --client-secret $CLIENT_SECRET  \
   --session       $SESSION \
   --export-dir    $STAGING \
   --import-extra           \
@@ -402,7 +412,8 @@ To run everything in one orchestrated command (all tiers, correct order):
 ```bash
 ./import_gcp.sh \
   --workspace-url $GCP_URL \
-  --token         $TOKEN   \
+  --client-id     $CLIENT_ID      \
+  --client-secret $CLIENT_SECRET  \
   --profile       $PROFILE \
   --session       $SESSION
 ```
