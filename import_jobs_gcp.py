@@ -644,9 +644,19 @@ def _transform_job(job: Dict, cfg: Dict, node_map: Dict[str, str], warnings: Lis
     settings = j.get("settings", {})
     job_name = settings.get("name", "")
 
-    # ── Exclude check ─────────────────────────────────────────────────────────
+    # ── Exclude check (regex patterns) ────────────────────────────────────────
     if job_name and should_exclude(job_name, cfg, "job"):
         warnings.append(f"EXCLUDED job: {job_name!r}")
+        return None
+
+    # ── job_import.skip_jobs (exact name match) ────────────────────────────
+    # Strip the :::JOB_ID suffix first so config names match the display name
+    _bare_name = job_name.split(":::")[0].strip() if ":::" in job_name else job_name
+    ji_cfg           = cfg.get("job_import", {})
+    skip_list        = {j.strip() for j in ji_cfg.get("skip_jobs", []) if j.strip()}
+    force_recreate_s = {j.strip() for j in ji_cfg.get("force_recreate_jobs", []) if j.strip()}
+    if _bare_name in skip_list and _bare_name not in force_recreate_s:
+        warnings.append(f"SKIPPED (job_import.skip_jobs): {_bare_name!r}")
         return None
 
     # Remap first (preserves email for domain matching), then sanitise
@@ -1289,9 +1299,92 @@ def delete_existing_jobs(
     }
 
 
-# ---------------------------------------------------------------------------
-# Extra components importer
-# ---------------------------------------------------------------------------
+def force_delete_jobs_by_name(
+    workspace_url: str,
+    token: str,
+    job_names: List[str],
+    dry_run: bool = False,
+    verify_ssl: bool = True,
+) -> Dict:
+    """
+    Delete specific jobs from the target workspace by exact display name.
+
+    Used for ``job_import.force_recreate_jobs``: removes the named jobs so
+    migration_pipeline.py can re-create them from the staged export.
+
+    Parameters
+    ----------
+    workspace_url : Target Databricks workspace URL.
+    token         : Bearer token.
+    job_names     : List of exact job display names to delete.
+    dry_run       : Preview only — no API deletions.
+    verify_ssl    : SSL certificate verification.
+
+    Returns
+    -------
+    dict with keys: found, deleted, failed, not_found, errors
+    """
+    if not job_names:
+        _LOG.info("force_delete_jobs_by_name: no job names supplied – nothing to do.")
+        return {"found": 0, "deleted": 0, "failed": 0, "not_found": [], "errors": []}
+
+    target_set = {n.strip() for n in job_names if n.strip()}
+    _LOG.info("Force-recreate: looking for %d job(s) on target workspace …", len(target_set))
+
+    try:
+        all_jobs = _list_all_jobs(workspace_url, token, verify_ssl)
+    except Exception as exc:
+        return {"found": 0, "deleted": 0, "failed": 0,
+                "not_found": list(target_set),
+                "errors": [f"Failed to list jobs: {exc}"]}
+
+    matched   = [j for j in all_jobs
+                 if j.get("settings", {}).get("name", "").strip() in target_set]
+    found_names = {j.get("settings", {}).get("name", "") for j in matched}
+    not_found   = sorted(target_set - found_names)
+
+    if not matched:
+        _LOG.info("  None of the force_recreate_jobs found on target – "
+                  "they will be created fresh.")
+        return {"found": 0, "deleted": 0, "failed": 0,
+                "not_found": not_found, "errors": []}
+
+    print(f"\n  Force-recreate: found {len(matched)} job(s) to delete before re-import:")
+    for j in matched:
+        print(f"    • [{j['job_id']}] {j.get('settings', {}).get('name', '(unnamed)')}")
+    if not_found:
+        print(f"  Not found on target (will be created fresh): {not_found}")
+    print()
+
+    if dry_run:
+        print("  DRY RUN – jobs would be deleted (no API calls made).")
+        return {"found": len(matched), "deleted": 0, "failed": 0,
+                "not_found": not_found, "errors": [], "dry_run": True}
+
+    deleted, failed, errors = 0, 0, []
+    for job in matched:
+        jid   = job["job_id"]
+        jname = job.get("settings", {}).get("name", "(unnamed)")
+        try:
+            _delete_job(workspace_url, token, jid, verify_ssl)
+            _LOG.info("  Force-deleted job [%d] %s", jid, jname)
+            deleted += 1
+        except Exception as exc:
+            msg = f"Failed to delete job [{jid}] {jname}: {exc}"
+            _LOG.warning(msg)
+            errors.append(msg)
+            failed += 1
+
+    print(f"  ✓ Force-deleted {deleted} job(s)"
+          + (f"  ✗ {failed} failed" if failed else ""))
+
+    return {
+        "found": len(matched), "deleted": deleted, "failed": failed,
+        "not_found": not_found, "errors": errors,
+    }
+
+
+
 
 def _import_extra_components(
     workspace_url: str,
@@ -1497,11 +1590,17 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Delete ALL existing jobs on the target workspace before "
                           "importing. Presents a confirmation prompt unless --force is "
                           "also passed. Requires --workspace-url and --token.")
+    act.add_argument("--force-recreate-jobs", action="store_true",
+                     help="Read job_import.force_recreate_jobs from --config and delete "
+                          "those specific jobs on the target workspace by name, then let "
+                          "migration_pipeline re-create them from the staged export. "
+                          "Overrides job_import.skip_jobs for matching names. "
+                          "Requires --workspace-url and --token.")
     act.add_argument("--force", action="store_true",
                      help="Skip the confirmation prompt when --delete-existing-jobs is used.")
     act.add_argument("--dry-run", action="store_true",
-                     help="With --import-extra / --delete-existing-jobs: show what would "
-                          "happen without calling the API")
+                     help="With --import-extra / --delete-existing-jobs / --force-recreate-jobs: "
+                          "show what would happen without calling the API")
 
     tgt = p.add_argument_group("target workspace (required for --import-extra and --migrate-service-principals)")
     tgt.add_argument("-u", "--workspace-url", default=None,
@@ -1746,7 +1845,48 @@ def main() -> int:
                          del_result["failed"])
             rc = 2
 
-    # ── Stage 2: Import extra components ─────────────────────────────────
+    # ── Stage 1.7: Force-recreate specific jobs by name ──────────────────
+    if getattr(args, "force_recreate_jobs", False):
+        if not args.workspace_url or not args.token:
+            _LOG.error("--force-recreate-jobs requires --workspace-url and --token")
+            return 1
+        fr_names = [n.strip() for n in cfg.get("job_import", {}).get("force_recreate_jobs", [])
+                    if n.strip()]
+        _LOG.info("=" * 60)
+        _LOG.info(" Stage 1.7 – Force-recreate jobs (delete then re-create)")
+        _LOG.info("  Workspace  : %s", args.workspace_url)
+        _LOG.info("  Jobs       : %s", fr_names if fr_names else "(none configured)")
+        _LOG.info("  Dry run    : %s", args.dry_run)
+        _LOG.info("=" * 60)
+        if ilog:
+            ilog.begin_step("force_recreate_jobs",
+                            "import_jobs_gcp.py --force-recreate-jobs",
+                            "Delete named jobs on target so migration_pipeline recreates them")
+        fr_result = force_delete_jobs_by_name(
+            workspace_url=args.workspace_url,
+            token=args.token,
+            job_names=fr_names,
+            dry_run=args.dry_run,
+            verify_ssl=not args.no_ssl_verification,
+        )
+        if ilog:
+            ilog.end_step(
+                status="dry_run" if fr_result.get("dry_run") else
+                       ("failed" if fr_result.get("failed", 0) > 0 else "success"),
+                total=fr_result.get("found", 0),
+                created=0,
+                skipped=len(fr_result.get("not_found", [])),
+                failed=fr_result.get("failed", 0),
+                notes=(f"Deleted {fr_result.get('deleted', 0)} of {fr_result.get('found', 0)} jobs"
+                       f"; {len(fr_result.get('not_found',[]))} not found on target"),
+                errors=fr_result.get("errors", []),
+            )
+        if fr_result.get("failed", 0) > 0:
+            _LOG.warning("%d force-recreate deletion(s) failed – job(s) may already exist "
+                         "on target and could be duplicated after import", fr_result["failed"])
+            rc = 2
+
+
     if args.import_extra:
         if not args.workspace_url or not args.token:
             _LOG.error("--import-extra requires --workspace-url and --token")

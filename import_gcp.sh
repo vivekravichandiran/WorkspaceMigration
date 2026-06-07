@@ -19,6 +19,10 @@
 #
 #   Step 1.6  (Optional) Delete existing jobs on target before importing.
 #
+#   Step 1.7  (Optional) Force-recreate specific jobs: delete named jobs on
+#             target by display name (from job_import.force_recreate_jobs config),
+#             then re-create them fresh via migration_pipeline. Overrides skip_jobs.
+#
 #   Step 2  Migrate tool – run databrickslabs/migrate --import-pipeline
 #             Handles: users, groups, workspace/notebooks, secrets,
 #                      clusters, instance pools, jobs, ACLs, Hive metastore,
@@ -48,12 +52,12 @@
 #   --config         FILE  gcp_import_config.json (default: ./gcp_import_config.json)
 #   --mapping        FILE  node_type_mapping.csv  (default: ./node_type_mapping.csv)
 #   --skip-step      N     Skip step 1, 1.5, 2, 3, or 4 (repeatable)
-#   --dry-run              Step 1.5/1.6/3: preview actions without calling API
-#   --delete-existing-jobs Delete all jobs on target workspace before importing (step 1.6)
+#   --dry-run              Step 1.5/1.6/1.7/3: preview actions without calling API
+#   --delete-existing-jobs Delete ALL jobs on target workspace before importing (step 1.6)
+#   --force-recreate-jobs  Delete only jobs listed in job_import.force_recreate_jobs, then re-create (step 1.7)
 #   --force                Skip confirmation prompt for --delete-existing-jobs
 #   --include-mlflow       Step 2: include MLflow in the migrate tool import
 #   --folders-only         Step 2: create workspace folder skeleton only (no notebook/file content)
-#   --folders-only         Create workspace folder skeleton only (no notebook content)
 #   --no-ssl-verification  Disable SSL certificate verification
 #   --debug                Enable verbose debug logging
 #   -h, --help             Show this help
@@ -99,6 +103,7 @@ NO_SSL=false
 DEBUG=false
 DELETE_JOBS=false
 FORCE_DELETE=false
+FORCE_RECREATE_JOBS=false
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -116,8 +121,9 @@ while [[ $# -gt 0 ]]; do
         --dry-run)             DRY_RUN=true;                 shift   ;;
         --folders-only)        FOLDERS_ONLY=true;            shift   ;;
         --include-mlflow)      INCLUDE_MLFLOW=true;          shift   ;;
-        --delete-existing-jobs) DELETE_JOBS=true;            shift   ;;
-        --force)               FORCE_DELETE=true;            shift   ;;
+        --delete-existing-jobs) DELETE_JOBS=true;              shift   ;;
+        --force-recreate-jobs)  FORCE_RECREATE_JOBS=true;     shift   ;;
+        --force)               FORCE_DELETE=true;             shift   ;;
         --no-ssl-verification) NO_SSL=true;                  shift   ;;
         --debug)               DEBUG=true;                   shift   ;;
         -h|--help)
@@ -289,6 +295,21 @@ else
     log_info "  Staging  : ${STAGING_SESSION_DIR}"
 fi
 
+# ── Staging diff report (auto-generated after staging is ready) ──────────────
+DIFF_REPORT_HTML="${SESSION_DIR}/staging_diff_${SESSION_ID}.html"
+DIFF_REPORT_XLSX="${SESSION_DIR}/staging_diff_${SESSION_ID}.xlsx"
+if [[ -d "$SESSION_DIR" && -d "$STAGING_SESSION_DIR" ]]; then
+    log_info "Generating staging transformation report …"
+    PYTHONPATH="${SCRIPT_DIR}:${MIGRATE_REPO_DIR}" \
+        "$PYTHON3" "${SCRIPT_DIR}/staging_diff_report.py" \
+        --raw-dir   "$SESSION_DIR" \
+        --stage-dir "$STAGING_SESSION_DIR" \
+        --html-output  "$DIFF_REPORT_HTML" \
+        --excel-output "$DIFF_REPORT_XLSX" 2>&1 | grep -v "^$" || true
+    log_info "  Report (HTML) : ${DIFF_REPORT_HTML}"
+    log_info "  Report (Excel): ${DIFF_REPORT_XLSX}"
+fi
+
 # From here all steps operate on the STAGING copy, not the original
 ACTIVE_SESSION_DIR="$STAGING_SESSION_DIR"
 ACTIVE_EXPORT_BASE="$STAGING_BASE"
@@ -316,6 +337,49 @@ if $DELETE_JOBS; then
         || { log_error "Job deletion step failed or was cancelled – aborting."; exit 1; }
 
     log_info "Job deletion step complete."
+fi
+
+# ── Step 1.7: Force-recreate specific jobs by name ────────────────────────────
+if $FORCE_RECREATE_JOBS; then
+    log_step "Step 1.7 – Force-Recreate Specific Jobs (delete then re-import)"
+    log_info "  Reads job_import.force_recreate_jobs from config: ${GCP_CONFIG}"
+    log_info "  Deletes those jobs on target by name; migration_pipeline re-creates them."
+    log_info "  Target  : ${WORKSPACE_URL}"
+    log_info "  Dry run : ${DRY_RUN}"
+
+    FR_ARGS=(
+        --workspace-url "$WORKSPACE_URL"
+        --token         "$PAT_TOKEN"
+        --config        "$GCP_CONFIG"
+        --force-recreate-jobs
+        --no-preprocess
+    )
+    $DRY_RUN && FR_ARGS+=(--dry-run) || true
+    $NO_SSL  && FR_ARGS+=($SSL_FLAG) || true
+    $DEBUG   && FR_ARGS+=(--debug)   || true
+
+    PYTHONPATH="${SCRIPT_DIR}:${MIGRATE_REPO_DIR}" \
+        "$PYTHON3" "${SCRIPT_DIR}/import_jobs_gcp.py" "${FR_ARGS[@]}" \
+        || log_warn "Force-recreate step reported errors (non-fatal – check output above)."
+
+    log_info "Force-recreate preparation complete."
+fi
+
+# ── Read job_import.enabled from config ───────────────────────────────────────
+_JOB_IMPORT_ENABLED=true
+if command -v python3 &>/dev/null && [[ -f "$GCP_CONFIG" ]]; then
+    _ei=$(python3 -c "
+import json, sys
+try:
+    cfg = json.load(open('$GCP_CONFIG'))
+    print('true' if cfg.get('job_import', {}).get('enabled', True) else 'false')
+except Exception:
+    print('true')
+" 2>/dev/null)
+    [[ "$_ei" == "false" ]] && _JOB_IMPORT_ENABLED=false
+fi
+if ! $_JOB_IMPORT_ENABLED; then
+    log_warn "job_import.enabled=false in ${GCP_CONFIG} — job/workflow import will be skipped in Step 2."
 fi
 
 # ── Step 2: Migrate tool import ───────────────────────────────────────────────
@@ -370,6 +434,11 @@ else
     )
     $NO_SSL && MIGRATE_ARGS+=(--no-ssl-verification) || true
     $INCLUDE_MLFLOW && MIGRATE_ARGS+=(--include-mlflow) || true
+    # Honour job_import.enabled=false: skip the job import task inside migration_pipeline
+    if ! $_JOB_IMPORT_ENABLED; then
+        MIGRATE_ARGS+=(--skip-tasks import_jobs)
+        log_warn "  Skipping job import (job_import.enabled=false)"
+    fi
 
     MIGRATE_STEP_START=$(date +%s)
 

@@ -226,7 +226,7 @@ python3 $MIGRATE_DIR/migration_pipeline.py \
 ## Tier 5 — Jobs
 > **Depends on: Clusters, Notebooks, Instance Pools**
 
-### T5-01 · Jobs
+### T5-01 · Jobs (standard import)
 
 ```bash
 python3 $MIGRATE_DIR/migration_pipeline.py \
@@ -239,6 +239,79 @@ python3 $MIGRATE_DIR/migration_pipeline.py \
 **What it does:** Creates all jobs from `jobs.log`. Job cluster specs are already GCP-transformed.  
 Schedules are set to **PAUSED** by default (controlled by `schedule_behaviour` in config).  
 **Prerequisite:** Clusters (T2-02), Notebooks (T3-03), Instance Pools (T2-01).
+
+### T5-02 · Job Import Controls (config-driven)
+
+Three toggles in `gcp_import_config.json → job_import` control how jobs are handled:
+
+#### Toggle 1 — Disable all job import
+
+Set `"enabled": false` to completely skip job creation:
+
+```json
+"job_import": {
+  "enabled": false
+}
+```
+
+`import_gcp.sh` will automatically pass `--skip-tasks import_jobs` to `migration_pipeline.py`.  
+No jobs will be imported. All other components (clusters, notebooks, etc.) import normally.
+
+#### Toggle 2 — Skip specific jobs by name
+
+Add exact job display names to `"skip_jobs"`:
+
+```json
+"job_import": {
+  "enabled": true,
+  "skip_jobs": ["Legacy ETL Job", "Deprecated Report"]
+}
+```
+
+Those jobs are **removed from the staged `jobs.log`** during `build_staging` and will not be created.  
+Applies exact match after stripping the `:::JOB_ID` suffix.  
+⚠ `skip_jobs` is overridden by `force_recreate_jobs` — a name in both lists is force-recreated, not skipped.
+
+#### Toggle 3 — Force-recreate specific jobs (delete then re-create)
+
+```json
+"job_import": {
+  "enabled": true,
+  "force_recreate_jobs": ["OCM - Daily ETL", "OCM - ML Training"]
+}
+```
+
+Run this **before** `migration_pipeline.py`:
+
+```bash
+# Step 1.7: delete named jobs from target so they are re-created fresh
+python3 import_jobs_gcp.py \
+  --workspace-url $GCP_URL \
+  --token         $TOKEN   \
+  --config        gcp_import_config.json \
+  --force-recreate-jobs
+
+# Step 2: import pipeline re-creates them
+python3 $MIGRATE_DIR/migration_pipeline.py \
+  --profile $PROFILE --gcp --import-pipeline \
+  --no-prompt --use-checkpoint \
+  --session $SESSION --set-export-dir $STAGING \
+  --keep-tasks jobs
+```
+
+Or run the full `import_gcp.sh` with `--force-recreate-jobs` to handle both steps automatically:
+
+```bash
+./import_gcp.sh \
+  --workspace-url $GCP_URL \
+  --token         $TOKEN   \
+  --profile       $PROFILE \
+  --session       $SESSION \
+  --force-recreate-jobs
+```
+
+`--force-recreate-jobs` without `--delete-existing-jobs` only deletes the named jobs — all other jobs on the target workspace remain untouched.  
+Add `--dry-run` to preview what would be deleted without making API calls.
 
 ---
 
@@ -335,7 +408,23 @@ To run everything in one orchestrated command (all tiers, correct order):
 ```
 
 To skip a tier: add `--skip-step <N>` (1, 1.5, 2, 3, or 4).  
-To run folders only (no notebook content): add `--folders-only`.
+To run folders only (no notebook content): add `--folders-only`.  
+To skip job import entirely (respects `job_import.enabled=false`): set config and re-run.  
+To force-recreate specific jobs before import: add `--force-recreate-jobs`.  
+To delete ALL jobs before import: add `--delete-existing-jobs`.
+
+### Job import flags summary
+
+| Flag | Scope | Effect |
+|---|---|---|
+| `job_import.enabled: false` | All jobs | Skip job import step entirely |
+| `job_import.skip_jobs: [...]` | Named jobs | Remove from staging; not imported |
+| `job_import.force_recreate_jobs: [...]` | Named jobs | Delete from target, then re-create fresh |
+| `--delete-existing-jobs` | All jobs on target | Delete every job before import |
+| `--force-recreate-jobs` | Named jobs in config | Step 1.7: delete only the listed jobs |
+
+**Priority:** `force_recreate_jobs` > `skip_jobs` > `enabled=false`
+
 
 ---
 

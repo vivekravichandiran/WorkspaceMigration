@@ -91,6 +91,19 @@
     "clear_on_import": false
   },
 
+  "job_import": {
+    "_comment": "Controls whether and how jobs/workflows are imported. Applied at both staging and import runtime.",
+
+    "enabled": true,
+    "_enabled_comment": "false = skip the entire job import step (migration_pipeline --keep-tasks import_jobs is NOT run). Staging transforms still apply unless the job is in skip_jobs.",
+
+    "skip_jobs": [],
+    "_skip_jobs_comment": "Exact job names to exclude from staging. These jobs are removed from the staged jobs.log and will NOT be imported. skip_jobs is overridden by force_recreate_jobs — a job in both lists will be force-recreated, not skipped.",
+
+    "force_recreate_jobs": [],
+    "_force_recreate_comment": "Exact job names to DELETE on the target workspace before importing, then re-create fresh from the export. (1) Job is kept in staged jobs.log. (2) It is deleted from the target by name just before migration_pipeline runs. (3) migration_pipeline creates it from scratch. Overrides skip_jobs."
+  },
+
   "all_purpose_cluster_options": {
     "_comment": "Options applied to all-purpose (interactive) cluster records during staging. Does NOT affect job clusters or instance pools.",
 
