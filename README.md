@@ -45,46 +45,52 @@ cd WorkspaceMigration
 ## Quick Start
 
 ```bash
-# 1. Inventory — see what's in the workspace before touching anything
-python3 workspace_inventory.py \
-  --workspace-url https://<workspace>.azuredatabricks.net \
-  --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-
-# 2. Export + auto-stage
+# 1. Export Azure workspace (OAuth M2M — recommended)
 ./export_azure.sh \
   --workspace-url https://<workspace>.azuredatabricks.net \
-  --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
+  --client-id     <SERVICE_PRINCIPAL_CLIENT_ID>           \
+  --client-secret <SERVICE_PRINCIPAL_CLIENT_SECRET>       \
   --azure
 
-# 3. Review staged files
-ls logs/<SESSION>_staging/
+# 2. Review the 6 auto-generated reports inside logs/<SESSION>/
+#    Then import into GCP:
+./import_gcp.sh \
+  --workspace-url https://<gcp-workspace>.gcp.databricks.com \
+  --client-id     <GCP_SERVICE_PRINCIPAL_CLIENT_ID>          \
+  --client-secret <GCP_SERVICE_PRINCIPAL_CLIENT_SECRET>      \
+  --profile       <DATABRICKS_CLI_PROFILE>                   \
+  --session       <SESSION_ID>
+```
 
 # 4. Import to target
 ./import_gcp.sh \
   --workspace-url https://<gcp-workspace>.gcp.databricks.com \
-  --token dapiXXXX \
-  --session <SESSION>
+  --client-id     <GCP_SERVICE_PRINCIPAL_CLIENT_ID>          \
+  --client-secret <GCP_SERVICE_PRINCIPAL_CLIENT_SECRET>      \
+  --profile       <DATABRICKS_CLI_PROFILE>                   \
+  --session       <SESSION_ID>
 ```
 
 ---
 
 ## Authentication
 
-All tools support two authentication modes. Use **one** of the following per command.
+All tools support two authentication modes.
 
-### PAT Token (Personal Access Token)
+### OAuth M2M — Service Principal (recommended)
 ```bash
---token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+--client-id     <SERVICE_PRINCIPAL_CLIENT_ID> \
+--client-secret <SERVICE_PRINCIPAL_CLIENT_SECRET>
 ```
+The script exchanges credentials for a Bearer token via `POST /oidc/v1/token` automatically.  
+No PAT token needs to be generated or stored.
 
-### OAuth M2M (Service Principal)
+> The service principal must have workspace **Admin** role (or sufficient entitlements) to export all components.
+
+### PAT Token (legacy / fallback)
 ```bash
---client-id     <client-id-uuid> \
---client-secret <client-secret>
+--token dapi<YOUR_PAT_TOKEN>
 ```
-The tools exchange credentials for a Bearer token via `POST /oidc/v1/token` automatically. Token is auto-refreshed if the run exceeds 59 minutes.
-
-> **Note:** The service principal must have workspace **Admin** role (or sufficient entitlements) to export all components. Limited SPs will get `403 PERMISSION_DENIED` errors on individual objects.
 
 ---
 
@@ -103,19 +109,19 @@ The tools exchange credentials for a Bearer token via `POST /oidc/v1/token` auto
 
 Generates an interactive HTML report and Excel workbook with a summary dashboard and per-component detail tabs.
 
-### Basic usage
+### Usage
 ```bash
 python3 workspace_inventory.py \
   --workspace-url https://<workspace>.azuredatabricks.net \
-  --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+  --client-id     <SERVICE_PRINCIPAL_CLIENT_ID>           \
+  --client-secret <SERVICE_PRINCIPAL_CLIENT_SECRET>
 ```
 
-### OAuth
+### PAT fallback
 ```bash
 python3 workspace_inventory.py \
   --workspace-url https://<workspace>.azuredatabricks.net \
-  --client-id     <client-id> \
-  --client-secret <client-secret>
+  --token         dapi<YOUR_PAT_TOKEN>
 ```
 
 ### Full options reference
@@ -156,53 +162,115 @@ Users, Groups, Service Principals, Notebooks, Workspace Files, Jobs, All-Purpose
 
 ## Export
 
-`export_azure.sh` orchestrates the full export in **3 steps**:
+`export_azure.sh` is a **single self-bootstrapping command** that:
+- Installs `databrickslabs/migrate` automatically on first run
+- Runs **3 steps** end-to-end
+- Generates **6 output reports** ready for review before any import
 
 ```
-Step 0  →  Pre-export workspace inventory (HTML + Excel)
-Step 1  →  Export all components via databrickslabs/migrate
-Step 2  →  Auto-staging (copy → apply GCP transforms + user remapping)
+Step 0  →  Pre-export workspace inventory   → inventory HTML + Excel
+Step 1  →  Full component export            → raw logs + export HTML + text report
+Step 2  →  Auto-staging (GCP transforms)    → staged files
+Step 3  →  Staging diff report              → pre/post change HTML + Excel
 ```
 
-### Basic usage
+### The command
+
 ```bash
 ./export_azure.sh \
   --workspace-url https://<workspace>.azuredatabricks.net \
-  --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
+  --client-id     <SERVICE_PRINCIPAL_CLIENT_ID>           \
+  --client-secret <SERVICE_PRINCIPAL_CLIENT_SECRET>       \
   --azure
 ```
 
-### OAuth
+> **OAuth M2M is the recommended authentication method.** The script exchanges
+> `--client-id` + `--client-secret` for a short-lived access token automatically via
+> `POST /oidc/v1/token`. No PAT token needs to be generated or stored.
+>
+> PAT token fallback: replace `--client-id`/`--client-secret` with `--token dapi...`
+
+### What gets generated
+
+After the command completes, all 6 files land inside `logs/<SESSION>/`:
+
+```
+logs/
+└── EXPORT_<TIMESTAMP>/
+    ├── inventory_pre_export.html       ← 🗂  Workspace inventory (HTML dashboard)
+    ├── inventory_pre_export.xlsx       ← 🗂  Workspace inventory (Excel, 16 tabs)
+    ├── export_report.txt               ← 📋  Component-by-component export summary
+    ├── export_report.html              ← 📊  Interactive HTML export report
+    ├── staging_diff_<SESSION>.html     ← 🔍  Pre/post staging changes (HTML)
+    ├── staging_diff_<SESSION>.xlsx     ← 🔍  Pre/post staging changes (Excel)
+    └── <SESSION>_staging/             ← 📦  GCP-ready files (review before import)
+```
+
+Open the staging diff report to review every transformation applied before importing.
+
+### Common variants
+
 ```bash
+# Azure workspace (full export, OAuth)
 ./export_azure.sh \
   --workspace-url https://<workspace>.azuredatabricks.net \
-  --client-id     <client-id> \
-  --client-secret <client-secret> \
+  --client-id     <CLIENT_ID>     \
+  --client-secret <CLIENT_SECRET> \
   --azure
+
+# Azure workspace (PAT token fallback)
+./export_azure.sh \
+  --workspace-url https://<workspace>.azuredatabricks.net \
+  --token         dapi<YOUR_PAT_TOKEN>                    \
+  --azure
+
+# Custom session name and export directory
+./export_azure.sh \
+  --workspace-url https://<workspace>.azuredatabricks.net \
+  --client-id     <CLIENT_ID>     \
+  --client-secret <CLIENT_SECRET> \
+  --azure                         \
+  --session PROD_MIGRATION_20260607 \
+  --export-dir /data/exports
+
+# Include MLflow (skipped by default — can be large)
+./export_azure.sh \
+  --workspace-url https://<workspace>.azuredatabricks.net \
+  --client-id     <CLIENT_ID>     \
+  --client-secret <CLIENT_SECRET> \
+  --azure --include-mlflow
+
+# Skip specific components
+./export_azure.sh \
+  --workspace-url https://<workspace>.azuredatabricks.net \
+  --client-id     <CLIENT_ID>     \
+  --client-secret <CLIENT_SECRET> \
+  --azure \
+  --skip metastore metastore_table_acls unity_catalog
 ```
 
 ### Full options reference
 
 | Flag | Default | Description |
 |---|---|---|
-| `-u, --workspace-url` | required | Source workspace URL |
-| `-t, --token` | — | PAT token |
-| `--client-id` | — | OAuth SP client ID |
-| `--client-secret` | — | OAuth SP client secret |
-| `-s, --session` | auto-generated | Session ID (e.g. `PROD_MIGRATION_2024`) |
+| `-u, --workspace-url` | required | Source workspace URL (`https://...`) |
+| `--client-id` | — | **OAuth SP client ID (recommended)** |
+| `--client-secret` | — | **OAuth SP client secret (recommended)** |
+| `-t, --token` | — | PAT token (legacy / fallback) |
+| `-s, --session` | auto-generated | Session ID (e.g. `PROD_MIGRATION_20260607`) |
 | `-d, --export-dir` | `./logs/` | Base export directory |
 | `--azure` | — | Flag for Azure source workspace |
 | `--gcp` | — | Flag for GCP source workspace |
 | `-p, --num-parallel` | 4 | Download thread count |
 | `--notebook-format` | `DBC` | `DBC` / `SOURCE` / `HTML` |
-| `--skip COMPONENT...` | — | Space-separated components to skip (see below) |
-| `--include-mlflow` | off | Export MLflow experiments and runs (skipped by default — can be very large) |
+| `--skip COMPONENT...` | — | Space-separated components to skip (see table below) |
+| `--include-mlflow` | off | Export MLflow experiments and runs |
 | `--skip-failed` | off | Skip metastore retries on failure |
 | `--no-ssl-verification` | off | Disable SSL certificate verification |
 | `--retry-total` | 10 | Total HTTP retries |
 | `--retry-backoff` | 1.0 | Retry backoff factor |
 | `--debug` | off | Enable debug-level logging |
-| `--report-only` | off | Re-generate report from existing `export_status.json` |
+| `--report-only` | off | Re-generate report from existing `export_status.json` without re-exporting |
 | `--dry-run` | off | Print resolved config and exit without exporting |
 | `--reinstall` | off | Force re-clone and re-install `databrickslabs/migrate` |
 
@@ -228,27 +296,6 @@ Step 2  →  Auto-staging (copy → apply GCP transforms + user remapping)
 | Genie Spaces | `genie_spaces` |
 | Model Serving | `serving_endpoints` |
 | Unity Catalog | `unity_catalog` |
-
-### Component-by-component examples
-
-```bash
-# Jobs only
-./export_azure.sh --workspace-url <URL> --token <PAT> \
-  --skip users groups notebooks clusters instance_pools metastore secrets \
-         sql_warehouses dlt_pipelines repos lakeview_dashboards \
-         genie_spaces serving_endpoints unity_catalog
-
-# Notebooks only
-./export_azure.sh --workspace-url <URL> --token <PAT> \
-  --skip users groups clusters jobs instance_pools metastore secrets \
-         sql_warehouses dlt_pipelines repos lakeview_dashboards \
-         genie_spaces serving_endpoints unity_catalog
-
-# SQL Warehouses + DLT + Genie Spaces only
-./export_azure.sh --workspace-url <URL> --token <PAT> \
-  --skip users groups notebooks clusters jobs instance_pools metastore \
-         secrets repos lakeview_dashboards serving_endpoints unity_catalog
-```
 
 ---
 
@@ -282,8 +329,10 @@ python3 import_jobs_gcp.py \
 ```bash
 ./import_gcp.sh \
   --workspace-url https://<gcp-workspace>.gcp.databricks.com \
-  --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
-  --session <SESSION>
+  --client-id     <GCP_SERVICE_PRINCIPAL_CLIENT_ID>          \
+  --client-secret <GCP_SERVICE_PRINCIPAL_CLIENT_SECRET>      \
+  --profile       <DATABRICKS_CLI_PROFILE>                   \
+  --session       <SESSION_ID>
 ```
 
 ---
@@ -484,8 +533,10 @@ Genie Spaces require an internal `serialized_space` protobuf that cannot be extr
 ### Re-generate export report without re-running
 ```bash
 ./export_azure.sh \
-  --workspace-url <URL> --token <PAT> \
-  --session <SESSION> \
+  --workspace-url <URL>        \
+  --client-id     <CLIENT_ID>  \
+  --client-secret <CLIENT_SECRET> \
+  --session       <SESSION>    \
   --report-only
 ```
 
