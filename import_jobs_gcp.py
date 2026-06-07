@@ -1204,7 +1204,8 @@ def import_folders_only(
             created += 1
             continue
         try:
-            resp = requests.post(
+            import requests as _req
+            resp = _req.post(
                 mkdirs_url,
                 headers=headers,
                 json={"path": p},
