@@ -81,5 +81,33 @@
   "email_notifications": {
     "_comment": "Set clear_on_import=true to strip all email notification addresses from imported jobs.",
     "clear_on_import": false
+  },
+
+  "all_purpose_cluster_options": {
+    "_comment": "Options applied to all-purpose (interactive) cluster records during staging. Does NOT affect job clusters or instance pools.",
+
+    "remove_acls": false,
+    "_remove_acls_comment": "true = wipe access_control_list entries in acl_clusters.log to a clean slate (only built-in admins group kept).",
+
+    "remove_libraries": false,
+    "_remove_libraries_comment": "true = strip the 'libraries' array from every all-purpose cluster record.",
+
+    "remove_sas_tokens": true,
+    "_remove_sas_tokens_comment": "true = drop spark_conf keys that look like Azure SAS/account-key configs (*.azure.*, *.wasb.*, *.abfs.*, *.dfs.core.windows.net, *.blob.core.windows.net).",
+
+    "gcp_spark_config": {
+      "enabled": true,
+      "_enabled_comment": "Master toggle for GCP spark config rewriting.",
+
+      "remove_azure_storage_configs": true,
+      "_azure_comment": "Drop all spark_conf keys referencing Azure storage (fs.azure.*, spark.hadoop.fs.azure.*, wasb://, abfss://).",
+
+      "remove_aws_configs": true,
+      "_aws_comment": "Drop all spark_conf keys referencing AWS (fs.s3.*, spark.hadoop.fs.s3*, etc.).",
+
+      "inject": {
+        "_comment": "Key-value pairs injected into spark_conf of every all-purpose cluster. Leave empty to inject nothing."
+      }
+    }
   }
 }

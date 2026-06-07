@@ -401,6 +401,94 @@ def _transform_disk_spec(disk_spec: Optional[Dict]) -> Optional[Dict]:
     return ds or None
 
 
+def _apply_apc_options(cluster: Dict, cfg: Dict, label: str = "") -> Dict:
+    """Apply all_purpose_cluster_options from config to a standalone cluster record.
+
+    Handles:
+      • remove_libraries    — strips the 'libraries' array
+      • remove_sas_tokens   — drops Azure SAS / account-key spark_conf keys
+      • gcp_spark_config    — removes Azure/AWS storage spark_conf keys,
+                              injects GCP-specific keys
+    """
+    opts = cfg.get("all_purpose_cluster_options", {})
+    if not opts:
+        return cluster
+
+    c = cluster  # already a deep copy from caller
+
+    # ── Remove libraries ─────────────────────────────────────────────────────
+    if opts.get("remove_libraries"):
+        if "libraries" in c:
+            _LOG.info("  [APC] %s: removing libraries (%d)", label, len(c["libraries"]))
+            c.pop("libraries")
+
+    # ── Remove SAS tokens / Azure account keys from spark_conf ───────────────
+    sc = c.get("spark_conf", {})
+    if opts.get("remove_sas_tokens") and sc:
+        _SAS_PATTERNS = (
+            "azure", "wasb", "abfs", "abfss",
+            "dfs.core.windows.net", "blob.core.windows.net",
+            "adls", "adl.", "datalake",
+        )
+        removed = [k for k in list(sc.keys())
+                   if any(p in k.lower() for p in _SAS_PATTERNS)]
+        for k in removed:
+            sc.pop(k)
+            _LOG.info("  [APC] %s: removed SAS/key spark_conf key: %s", label, k)
+        if removed:
+            c["spark_conf"] = sc
+
+    # ── GCP spark_conf rewrite ────────────────────────────────────────────────
+    gcp_cfg = opts.get("gcp_spark_config", {})
+    if gcp_cfg.get("enabled") and sc is not None:
+        sc = c.get("spark_conf", {})
+
+        if gcp_cfg.get("remove_azure_storage_configs"):
+            _AZURE_PREFIXES = (
+                "fs.azure", "spark.hadoop.fs.azure",
+                "fs.adl", "spark.hadoop.fs.adl",
+                "spark.hadoop.fs.abfs", "spark.hadoop.fs.abfss",
+                "spark.hadoop.dfs.azure",
+            )
+            _AZURE_SUBSTRINGS = ("wasb://", "abfss://", "abfs://", ".dfs.core.windows.net",
+                                 ".blob.core.windows.net", "azure.account")
+            removed_az = []
+            for k in list(sc.keys()):
+                kl = k.lower()
+                if (any(kl.startswith(p.lower()) for p in _AZURE_PREFIXES) or
+                        any(s in kl for s in _AZURE_SUBSTRINGS)):
+                    sc.pop(k)
+                    removed_az.append(k)
+            if removed_az:
+                _LOG.info("  [APC] %s: removed %d Azure spark_conf key(s)", label, len(removed_az))
+
+        if gcp_cfg.get("remove_aws_configs"):
+            _AWS_PREFIXES = (
+                "fs.s3", "spark.hadoop.fs.s3",
+                "spark.hadoop.fs.s3a", "spark.hadoop.fs.s3n",
+                "spark.hadoop.mapreduce.fileoutputcommitter",
+                "fs.s3a", "fs.s3n",
+            )
+            removed_aws = []
+            for k in list(sc.keys()):
+                if any(k.lower().startswith(p.lower()) for p in _AWS_PREFIXES):
+                    sc.pop(k)
+                    removed_aws.append(k)
+            if removed_aws:
+                _LOG.info("  [APC] %s: removed %d AWS spark_conf key(s)", label, len(removed_aws))
+
+        # Inject GCP-specific configs
+        inject = {k: v for k, v in gcp_cfg.get("inject", {}).items()
+                  if not k.startswith("_")}
+        if inject:
+            sc.update(inject)
+            _LOG.info("  [APC] %s: injected %d GCP spark_conf key(s)", label, len(inject))
+
+        c["spark_conf"] = sc
+
+    return c
+
+
 def transform_cluster_spec(
     cluster: Dict,
     cfg: Dict,
@@ -567,7 +655,11 @@ def _transform_cluster_record(cluster: Dict, cfg: Dict, node_map: Dict[str, str]
               "init_scripts_safe_mode", "jdbc_port", "spark_context_id"]:
         c.pop(f, None)
 
-    return transform_cluster_spec(c, cfg, node_map, warnings, c.get("cluster_name", "?"))
+    result = transform_cluster_spec(c, cfg, node_map, warnings, c.get("cluster_name", "?"))
+
+    # Apply all-purpose-cluster-specific options (libraries, SAS tokens, GCP spark config)
+    result = _apply_apc_options(result, cfg, label=c.get("cluster_name", "?"))
+    return result
 
 
 def _transform_pool_record(pool: Dict, cfg: Dict, node_map: Dict[str, str], warnings: List[str],
@@ -856,6 +948,20 @@ def build_staging(
     for fname in ("acl_jobs.log", "acl_clusters.log", "acl_notebooks.log",
                   "acl_directories.log", "acl_repos.log", "secret_scopes_acls.log"):
         _remap_jsonl_file(os.path.join(staging_dir, fname), fname)
+
+    # ── remove_acls: wipe cluster ACLs to clean slate ────────────────────────
+    apc_opts = cfg.get("all_purpose_cluster_options", {})
+    if apc_opts.get("remove_acls"):
+        acl_path = os.path.join(staging_dir, "acl_clusters.log")
+        if os.path.isfile(acl_path):
+            records = _read_jsonl(acl_path)
+            cleaned = []
+            for rec in records:
+                rec["access_control_list"] = []
+                cleaned.append(rec)
+            _write_jsonl(acl_path, cleaned)
+            print(f"  remove_acls: wiped ACLs for {len(cleaned)} cluster(s) → clean slate")
+            _LOG.info("  remove_acls: cleared acl_clusters.log (%d records)", len(cleaned))
 
     # Core export files (users, repos, pools, clusters)
     _remap_jsonl_file(os.path.join(staging_dir, "users.log"),           "users.log")
