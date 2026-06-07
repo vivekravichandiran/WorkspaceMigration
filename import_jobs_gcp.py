@@ -206,11 +206,16 @@ def _remap_users_in_obj(obj: Any, cfg: Dict) -> Any:
     user emails / IDs across ALL known field names used by Databricks exports.
 
     Covers: jobs, clusters, ACLs, users, groups, repos, secrets, DLT, warehouses.
+    Plain-string email items inside lists (e.g. email_notifications.on_failure)
+    are also remapped — any bare string containing '@' and a domain is treated as
+    a potential email and passed through remap_user().
     """
     _USER_KEYS = {
         # Jobs / clusters / pools
         "user_name", "creator_user_name", "run_as_user_name",
         "owner", "created_by",
+        # Cloud resource tags (Azure/AWS → GCP carry-over)
+        "Owner", "Creator",
         # SCIM users
         "userName", "value", "display",
         # Email notifications
@@ -233,6 +238,11 @@ def _remap_users_in_obj(obj: Any, cfg: Dict) -> Any:
         return result
     if isinstance(obj, list):
         return [_remap_users_in_obj(item, cfg) for item in obj]
+    # Plain string — if it looks like an email remap it regardless of parent key.
+    # This catches on_start/on_success/on_failure email arrays, webhook recipients,
+    # and any other bare email string buried in the export.
+    if isinstance(obj, str) and "@" in obj and "." in obj.split("@")[-1]:
+        return remap_user(obj, cfg)
     return obj
 
 
@@ -847,11 +857,14 @@ def build_staging(
                   "acl_directories.log", "acl_repos.log", "secret_scopes_acls.log"):
         _remap_jsonl_file(os.path.join(staging_dir, fname), fname)
 
-    # Core export files (users, repos, pools)
-    _remap_jsonl_file(os.path.join(staging_dir, "users.log"),          "users.log")
-    _remap_jsonl_file(os.path.join(staging_dir, "repos.log"),          "repos.log")
-    _remap_jsonl_file(os.path.join(staging_dir, "instance_pools.log"), "instance_pools.log")
-    _remap_jsonl_file(os.path.join(staging_dir, "libraries.log"),      "libraries.log")
+    # Core export files (users, repos, pools, clusters)
+    _remap_jsonl_file(os.path.join(staging_dir, "users.log"),           "users.log")
+    _remap_jsonl_file(os.path.join(staging_dir, "repos.log"),           "repos.log")
+    _remap_jsonl_file(os.path.join(staging_dir, "instance_pools.log"),  "instance_pools.log")
+    _remap_jsonl_file(os.path.join(staging_dir, "libraries.log"),       "libraries.log")
+    _remap_jsonl_file(os.path.join(staging_dir, "clusters.log"),        "clusters.log")
+    _remap_jsonl_file(os.path.join(staging_dir, "skipped_clusters.log"),"skipped_clusters.log")
+    _remap_jsonl_file(os.path.join(staging_dir, "jobs.log"),            "jobs.log")
 
     # Workspace path files — also remap /Users/<email>/ path segments
     for fname in ("user_dirs.log", "user_workspace.log"):
