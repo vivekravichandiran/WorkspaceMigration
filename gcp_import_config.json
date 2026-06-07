@@ -30,10 +30,18 @@
   },
 
   "gcp_attributes": {
-    "_comment": "Fallback GCP attributes injected when the source Azure cluster has no explicit availability setting. The 'availability' field is auto-mapped from azure_attributes: ON_DEMAND_AZURE→ON_DEMAND_GCP | SPOT_AZURE→PREEMPTIBLE_GCP | SPOT_WITH_FALLBACK_AZURE→SPOT_WITH_FALLBACK_GCP. Set here only as the default when Azure has no azure_attributes.",
+    "_comment": "GCP attributes injected into every cluster. availability is auto-mapped from azure_attributes (ON_DEMAND_AZURE→ON_DEMAND_GCP | SPOT_AZURE→PREEMPTIBLE_GCP | SPOT_WITH_FALLBACK_AZURE→SPOT_WITH_FALLBACK_GCP). Set here only as the default when Azure has no azure_attributes.",
     "availability": "ON_DEMAND_GCP",
     "first_on_demand": 1,
-    "local_ssd_count": 0,
+
+    "local_ssd_count": "auto",
+    "_local_ssd_count_comment": "'auto' = inspect the Azure VM name: if it has 's' (Premium SSD) or 'd' (local NVMe temp disk) in the feature suffix, use local_ssd_count_ssd_default; otherwise 0. Set an explicit integer to override for all clusters.",
+    "local_ssd_count_ssd_default": 1,
+    "_local_ssd_count_ssd_default_comment": "Value used when local_ssd_count is 'auto' and the Azure VM supports SSD/local disk.",
+
+    "enable_elastic_disk": true,
+    "_enable_elastic_disk_comment": "Attach and auto-resize GCP persistent boot disk. Recommended true for all clusters. Set false to use a fixed-size boot disk.",
+
     "zone_id": "auto"
   },
 

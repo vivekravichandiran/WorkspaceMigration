@@ -341,6 +341,44 @@ def _derive_availability(azure_attrs: Dict, cfg_default: str) -> tuple:
     return gcp_av, first_on_demand
 
 
+def _azure_has_ssd(node_type: str) -> bool:
+    """Return True if the Azure VM size name indicates SSD or local NVMe disk support.
+
+    Azure VM naming convention:
+      Standard_{Family}{Size}{Features}_{Version}
+      Features letters:
+        's'  = Premium SSD storage supported   (e.g. D4s_v3, E8as_v5)
+        'd'  = Local NVMe temp disk attached    (e.g. D4ds_v5, E8ads_v5)
+        'a'  = AMD processor (not SSD-related)
+
+    Examples that return True:
+      Standard_D4s_v3   → 's'  in features → Premium SSD
+      Standard_D4ds_v5  → 'd','s' in features → local NVMe + Premium SSD
+      Standard_D4as_v5  → 'a','s' in features → AMD + Premium SSD
+      Standard_D4ads_v5 → 'a','d','s' → all three
+
+    Examples that return False:
+      Standard_D4_v3    → no feature letters → HDD only
+      Standard_D4a_v4   → only 'a' → AMD but no SSD
+      Standard_D4_v3    → no suffix → HDD
+    """
+    import re as _re
+    # Extract feature letters: lowercase group after the size digits,
+    # before the optional _v{n} or end-of-string
+    # e.g. "Standard_D4ds_v5"  → group(1) = "ds"
+    #      "Standard_D4a_v4"   → group(1) = "a"
+    #      "Standard_D4_v3"    → group(1) = ""
+    m = _re.match(
+        r"Standard_[A-Za-z]+\d+([a-z]*)(?:_v\d+)?$",
+        node_type.strip(),
+        _re.IGNORECASE,
+    )
+    if m:
+        features = m.group(1).lower()
+        return "s" in features or "d" in features
+    return False
+
+
 def _build_gcp_attributes(cfg: Dict, source_cluster: Optional[Dict] = None) -> Dict:
     """
     Build the gcp_attributes dict for a cluster or pool.
@@ -356,21 +394,48 @@ def _build_gcp_attributes(cfg: Dict, source_cluster: Optional[Dict] = None) -> D
       (not set / default)        →  config default (ON_DEMAND_GCP)
 
     first_on_demand is carried over from azure_attributes when present.
+
+    local_ssd_count:
+      "auto"   → inspect node_type_id from source_cluster; if the Azure VM
+                  name has 's' or 'd' in its feature suffix (SSD / local NVMe)
+                  use local_ssd_count_ssd_default (default 1), else 0.
+      <int>    → use that fixed value for all clusters.
+
+    enable_elastic_disk:
+      Passed through as-is from config (default true).
     """
-    # Start from the config-level defaults (zone_id, local_ssd_count, etc.)
-    attrs = {k: v for k, v in cfg.get("gcp_attributes", {}).items()
-             if not k.startswith("_")}
+    gcp_cfg = cfg.get("gcp_attributes", {})
+
+    # Start from the config-level defaults, skip comment keys
+    attrs = {k: v for k, v in gcp_cfg.items() if not k.startswith("_")}
     for k, v in cfg.get("gcp_attributes_optional", {}).items():
         if v is not None and not k.startswith("_"):
             attrs[k] = v
 
+    # ── local_ssd_count: resolve "auto" ──────────────────────────────────────
+    ssd_cfg = attrs.get("local_ssd_count", 0)
+    if ssd_cfg == "auto":
+        node_type = (source_cluster or {}).get("node_type_id", "")
+        ssd_default = int(gcp_cfg.get("local_ssd_count_ssd_default", 1))
+        if node_type and _azure_has_ssd(node_type):
+            attrs["local_ssd_count"] = ssd_default
+            _LOG.debug("  local_ssd_count=auto: %s → has SSD → %d", node_type, ssd_default)
+        else:
+            attrs["local_ssd_count"] = 0
+            _LOG.debug("  local_ssd_count=auto: %s → no SSD → 0", node_type)
+    else:
+        attrs["local_ssd_count"] = int(ssd_cfg) if ssd_cfg else 0
+
+    # Drop the helper config key — not part of the GCP API payload
+    attrs.pop("local_ssd_count_ssd_default", None)
+
+    # ── availability + first_on_demand ────────────────────────────────────────
     if source_cluster is not None:
         az = source_cluster.get("azure_attributes", {})
         cfg_default_av = attrs.get("availability", "ON_DEMAND_GCP")
         gcp_av, first_on_demand = _derive_availability(az, cfg_default_av)
         attrs["availability"] = gcp_av
 
-        # Only override first_on_demand when the source explicitly set it
         if first_on_demand is not None:
             attrs["first_on_demand"] = first_on_demand
 
@@ -515,7 +580,10 @@ def transform_cluster_spec(
             c.pop("disk_spec", None)
 
     # Inject gcp_attributes — derive availability from source Azure attributes
-    c["gcp_attributes"] = _build_gcp_attributes(cfg, source_cluster={"azure_attributes": azure_attrs})
+    c["gcp_attributes"] = _build_gcp_attributes(cfg, source_cluster={
+        "azure_attributes": azure_attrs,
+        "node_type_id": cluster.get("node_type_id", ""),  # needed for local_ssd_count=auto
+    })
 
     # Map node types
     for key in ("node_type_id", "driver_node_type_id"):
@@ -552,6 +620,15 @@ def transform_cluster_spec(
     if "creator_user_name" in c:
         c["creator_user_name"] = _sanitise(
             remap_user(c["creator_user_name"], cfg), cfg)
+
+    # ── enable_elastic_disk ───────────────────────────────────────────────────
+    # Controlled by gcp_attributes.enable_elastic_disk; default true.
+    # Placed at top-level of the cluster spec (not inside gcp_attributes).
+    gcp_cfg = cfg.get("gcp_attributes", {})
+    if "enable_elastic_disk" in gcp_cfg:
+        c["enable_elastic_disk"] = bool(gcp_cfg["enable_elastic_disk"])
+    else:
+        c["enable_elastic_disk"] = True  # safe default
 
     return c
 
@@ -692,7 +769,10 @@ def _transform_pool_record(pool: Dict, cfg: Dict, node_map: Dict[str, str], warn
             p.pop("disk_spec", None)
 
     # Inject gcp_attributes for pools — derive availability from source Azure attributes
-    p["gcp_attributes"] = _build_gcp_attributes(cfg, source_cluster={"azure_attributes": azure_attrs})
+    p["gcp_attributes"] = _build_gcp_attributes(cfg, source_cluster={
+        "azure_attributes": azure_attrs,
+        "node_type_id": pool.get("node_type_id", ""),  # needed for local_ssd_count=auto
+    })
 
     # Map node type
     original = p.get("node_type_id")
