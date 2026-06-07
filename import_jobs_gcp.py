@@ -548,10 +548,10 @@ def transform_cluster_spec(
     if "cluster_name" in c:
         c["cluster_name"] = _sanitise(c["cluster_name"], cfg)
 
-    # Sanitise + remap creator_user_name inside cluster spec
+    # Remap first (preserves email for domain matching), then sanitise
     if "creator_user_name" in c:
-        c["creator_user_name"] = remap_user(
-            _sanitise(c["creator_user_name"], cfg), cfg)
+        c["creator_user_name"] = _sanitise(
+            remap_user(c["creator_user_name"], cfg), cfg)
 
     return c
 
@@ -572,10 +572,10 @@ def _transform_job(job: Dict, cfg: Dict, node_map: Dict[str, str], warnings: Lis
         warnings.append(f"EXCLUDED job: {job_name!r}")
         return None
 
-    # Sanitise + remap outer-level creator_user_name
+    # Remap first (preserves email for domain matching), then sanitise
     if "creator_user_name" in j:
-        j["creator_user_name"] = remap_user(
-            _sanitise(j["creator_user_name"], cfg), cfg)
+        j["creator_user_name"] = _sanitise(
+            remap_user(j["creator_user_name"], cfg), cfg)
 
     # Remove unwanted outer fields.
     # NOTE: job_id is never stripped – the migrate tool uses it for checkpoint tracking
@@ -640,10 +640,10 @@ def _transform_cluster_record(cluster: Dict, cfg: Dict, node_map: Dict[str, str]
         warnings.append(f"EXCLUDED cluster: {cluster_name!r}")
         return None
 
-    # Sanitise + remap outer fields
+    # Remap first (preserves email for domain matching), then sanitise
     if "creator_user_name" in c:
-        c["creator_user_name"] = remap_user(
-            _sanitise(c["creator_user_name"], cfg), cfg)
+        c["creator_user_name"] = _sanitise(
+            remap_user(c["creator_user_name"], cfg), cfg)
 
     # Remove runtime-only outer fields irrelevant to recreation.
     # NOTE: cluster_id is preserved intentionally – the migrate tool's
