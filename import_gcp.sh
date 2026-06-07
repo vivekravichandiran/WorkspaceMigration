@@ -67,7 +67,7 @@
 #
 # Prerequisites:
 #   • python3 and git installed
-#   • ~/.databricks-migrate/  set up (run migrate_workspace.sh once to bootstrap)
+#   • ~/.databricks-migrate/  set up (run export_azure.sh once to bootstrap)
 #   • Databricks CLI configured with DST_GCP_PROFILE
 # =============================================================================
 
@@ -199,7 +199,7 @@ STAGING_SESSION_DIR="${STAGING_BASE}/${SESSION_ID}"
 # migrate tool is only needed if step 2 isn't skipped
 if ! $_SKIP_STEP2; then
     [[ -z "$CLI_PROFILE" ]] && { log_error "--profile is required for Step 2 (migrate tool). Use --skip-step 2 to bypass."; exit 1; }
-    [[ -d "$MIGRATE_REPO_DIR" ]] || { log_error "Migrate repo not found: ${MIGRATE_REPO_DIR}. Run migrate_workspace.sh once to bootstrap."; exit 1; }
+    [[ -d "$MIGRATE_REPO_DIR" ]] || { log_error "Migrate repo not found: ${MIGRATE_REPO_DIR}. Run export_azure.sh once to bootstrap."; exit 1; }
 fi
 
 # Config/mapping only needed for step 1

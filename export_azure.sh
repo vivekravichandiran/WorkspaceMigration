@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# migrate_workspace.sh
+# export_azure.sh
 # =============================================================================
 # Self-bootstrapping Databricks workspace export utility.
 #
@@ -13,13 +13,13 @@
 #   6. Generate inventory, export HTML, staging diff reports
 #
 # Authentication — use OAuth M2M (recommended):
-#   ./migrate_workspace.sh \
+#   ./export_azure.sh \
 #       --workspace-url https://my-ws.azuredatabricks.net \
 #       --client-id     <SERVICE_PRINCIPAL_CLIENT_ID>    \
 #       --client-secret <SERVICE_PRINCIPAL_CLIENT_SECRET>
 #
 # Authentication — PAT token (legacy / fallback):
-#   ./migrate_workspace.sh \
+#   ./export_azure.sh \
 #       --workspace-url https://my-ws.azuredatabricks.net \
 #       --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 # =============================================================================
@@ -40,7 +40,7 @@ header()  { echo -e "\n${BOLD}$*${RESET}"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Where the databrickslabs/migrate repo will be cloned / already lives.
-# Override with env var: DATABRICKS_MIGRATE_DIR=/your/path ./migrate_workspace.sh ...
+# Override with env var: DATABRICKS_MIGRATE_DIR=/your/path ./export_azure.sh ...
 MIGRATE_REPO_DIR="${DATABRICKS_MIGRATE_DIR:-${HOME}/.databricks-migrate}"
 MIGRATE_REPO_URL="https://github.com/databrickslabs/migrate.git"
 
@@ -68,11 +68,11 @@ FORCE_REINSTALL=false   # --reinstall: re-run setup even if repo already exists
 # ── Usage ─────────────────────────────────────────────────────────────────────
 usage() {
 cat <<EOF
-${BOLD}migrate_workspace.sh${RESET} – Self-bootstrapping Databricks workspace export
+${BOLD}export_azure.sh${RESET} – Self-bootstrapping Databricks workspace export
 
 ${BOLD}USAGE${RESET}
-  ./migrate_workspace.sh --workspace-url <URL> --client-id <ID> --client-secret <SECRET> [OPTIONS]
-  ./migrate_workspace.sh --workspace-url <URL> --token <PAT> [OPTIONS]   # PAT fallback
+  ./export_azure.sh --workspace-url <URL> --client-id <ID> --client-secret <SECRET> [OPTIONS]
+  ./export_azure.sh --workspace-url <URL> --token <PAT> [OPTIONS]   # PAT fallback
 
 ${BOLD}REQUIRED${RESET}
   -u, --workspace-url URL    Databricks workspace URL (https://...)
@@ -526,7 +526,7 @@ fi
 
 echo ""
 info "To regenerate this report later:"
-info "  ./migrate_workspace.sh --workspace-url $WORKSPACE_URL --client-id <ID> --client-secret <SECRET> --session $SESSION_ID --report-only"
+info "  ./export_azure.sh --workspace-url $WORKSPACE_URL --client-id <ID> --client-secret <SECRET> --session $SESSION_ID --report-only"
 echo ""
 
 # ── Step 2 of 3: Auto-staging ─────────────────────────────────────────────────

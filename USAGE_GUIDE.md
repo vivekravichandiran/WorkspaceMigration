@@ -14,7 +14,7 @@ job deletion, Unity Catalog DDL, and DBFS libraries.
   - [Scenario 1 – Azure → GCP full migration](#scenario-1--azure--gcp-full-migration)
   - [Scenario 2 – Export only (audit / inventory)](#scenario-2--export-only-audit--inventory)
   - [Scenario 3 – Re-import after changes (clean slate)](#scenario-3--re-import-after-changes-clean-slate)
-- [Full Export – migrate_workspace.sh](#full-export--migrate_workspacesh)
+- [Full Export – export_azure.sh](#full-export--export_azuresh)
   - [Minimal command](#minimal-command)
   - [Advanced export options](#advanced-export-options)
   - [Azure workspace](#azure-workspace)
@@ -52,7 +52,7 @@ job deletion, Unity Catalog DDL, and DBFS libraries.
   - [Export session directory](#export-session-directory)
   - [GCP import additions](#gcp-import-additions)
 - [All CLI Flags Reference](#all-cli-flags-reference)
-  - [migrate_workspace.sh](#migrate_workspacesh-flags)
+  - [export_azure.sh](#export_azuresh-flags)
   - [import_gcp.sh](#import_gcpsh-flags)
   - [import_jobs_gcp.py](#import_jobs_gcppy-flags)
   - [export_unity_catalog.py](#export_unity_catalogpy-flags)
@@ -98,7 +98,7 @@ git clone https://github.com/your-org/workspace-migration.git
 cd workspace-migration
 
 # 2. Export from source (Azure in this example)
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://adb-1234567890.7.azuredatabricks.net \
   --token dapi<SRC_TOKEN> \
   --session PROD_2024
@@ -130,7 +130,7 @@ DLT Pipelines, Repos, Genie Spaces, and Model Serving Endpoints.
 
 ```bash
 # ── Step A: Export from Azure ─────────────────────────────────────────────────
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url  https://adb-7405618685784929.9.azuredatabricks.net \
   --token          dapi<AZURE_TOKEN> \
   --azure \
@@ -170,7 +170,7 @@ Export the workspace for audit or inventory purposes without running an import.
 Skip heavy components (DBFS downloads, MLflow) to run in under 5 minutes.
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url  https://adb-7405618685784929.9.azuredatabricks.net \
   --token          dapi<TOKEN> \
   --session        AUDIT_APR_2026 \
@@ -231,12 +231,12 @@ is regenerated automatically at the end.
 
 ---
 
-## Full Export – migrate_workspace.sh
+## Full Export – export_azure.sh
 
 ### Minimal command
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://adb-1234567890123456.7.azuredatabricks.net \
   --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ```
@@ -249,7 +249,7 @@ is regenerated automatically at the end.
 ### Advanced export options
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url  https://adb-1234567890123456.7.azuredatabricks.net \
   --token          dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --azure \
@@ -267,7 +267,7 @@ is regenerated automatically at the end.
 ### Azure workspace
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url  https://adb-1234567890123456.7.azuredatabricks.net \
   --token          dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --azure \
@@ -280,7 +280,7 @@ is regenerated automatically at the end.
 ### GCP workspace
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url  https://1234567890123456.7.gcp.databricks.com \
   --token          dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --gcp \
@@ -293,19 +293,19 @@ is regenerated automatically at the end.
 
 ```bash
 # Skip DBFS library downloads (metadata only, runs much faster)
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://my-workspace.azuredatabricks.net \
   --token         dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --skip          dbfs_libraries
 
 # Skip metastore (very large workspaces)
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://my-workspace.azuredatabricks.net \
   --token         dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --skip          metastore metastore_table_acls
 
 # Export only users, groups, and notebooks (minimal snapshot)
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://my-workspace.azuredatabricks.net \
   --token         dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --skip          secrets clusters instance_pools jobs \
@@ -349,7 +349,7 @@ is regenerated automatically at the end.
 MLflow is **skipped by default** because runs can be very large. To include them:
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://my-workspace.azuredatabricks.net \
   --token         dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --include-mlflow
@@ -364,19 +364,19 @@ MLflow is **skipped by default** because runs can be very large. To include them
 ### Force reinstall / update the migrate repo
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://my-workspace.azuredatabricks.net \
   --token         dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --reinstall
 
 # Use a custom directory (instead of the default ~/.databricks-migrate)
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url  https://my-workspace.azuredatabricks.net \
   --token          dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --migrate-dir    /opt/databricks/migrate
 
 # Or via environment variable
-DATABRICKS_MIGRATE_DIR=/opt/databricks/migrate ./migrate_workspace.sh \
+DATABRICKS_MIGRATE_DIR=/opt/databricks/migrate ./export_azure.sh \
   --workspace-url https://my-workspace.azuredatabricks.net \
   --token         dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ```
@@ -390,13 +390,13 @@ components are skipped automatically:
 
 ```bash
 # Original run (failed partway through)
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://my-workspace.azuredatabricks.net \
   --token         dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --session       PROD_MIGRATION_2024
 
 # Rerun with same --session → completed components are skipped
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://my-workspace.azuredatabricks.net \
   --token         dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --session       PROD_MIGRATION_2024
@@ -409,7 +409,7 @@ components are skipped automatically:
 Re-read a saved report without re-exporting anything:
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://my-workspace.azuredatabricks.net \
   --token         dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --session       PROD_MIGRATION_2024 \
@@ -430,7 +430,7 @@ print('HTML report:', path)
 Prints the resolved configuration and exits without touching Databricks:
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://my-workspace.azuredatabricks.net \
   --token         dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --session       TEST_SESSION \
@@ -630,7 +630,7 @@ python3 export_dbfs_libs.py \
   --debug
 ```
 
-> `migrate_workspace.sh` calls the library exporter automatically as the
+> `export_azure.sh` calls the library exporter automatically as the
 > `dbfs_libraries` component. Only run `export_dbfs_libs.py` directly when
 > using the step-by-step workflow.
 
@@ -967,7 +967,7 @@ browser with no internet connection needed.
 
 ### Export report
 
-Generated at the end of `migrate_workspace.sh`:
+Generated at the end of `export_azure.sh`:
 
 ```
 logs/<SESSION>/export_report.html
@@ -1212,7 +1212,7 @@ logs/PROD_MIGRATION_2024/
 
 ## All CLI Flags Reference
 
-### migrate_workspace.sh flags
+### export_azure.sh flags
 
 ```
 REQUIRED
@@ -1478,7 +1478,7 @@ OPTIONS
 
 ```bash
 # Pass the flag to either script
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://... --token dapi... \
   --no-ssl-verification
 
@@ -1511,7 +1511,7 @@ The running export detects the new token and resumes automatically.
 Reduce parallelism and increase retry backoff:
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://... --token dapi... \
   --num-parallel  2 \
   --retry-total   50 \
@@ -1743,7 +1743,7 @@ The metastore exporter cycles through all IAM instance profiles to retry failed
 tables. To skip retries and move on:
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://... --token dapi... \
   --skip-failed
 ```
@@ -1771,7 +1771,7 @@ cp ./local-backup/large-lib.jar \
 MLflow is **skipped by default**. Add `--include-mlflow` to include it:
 
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://... --token dapi... \
   --include-mlflow
 ```

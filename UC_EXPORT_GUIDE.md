@@ -36,7 +36,7 @@
 ## Installation / Prerequisites
 
 ```bash
-# In the migrate repo root (after running migrate_workspace.sh once)
+# In the migrate repo root (after running export_azure.sh once)
 cd ~/.databricks-migrate
 
 # Or directly from your WorkspaceMigration directory
@@ -246,15 +246,15 @@ To recreate these in the target workspace:
 
 ---
 
-## Integration with `migrate_workspace.sh`
+## Integration with `export_azure.sh`
 
-The UC exporter is automatically invoked by `migrate_workspace.sh` as the `unity_catalog` component. To control which catalogs are exported when running the full workspace migration, use these flags when calling the full exporter from `full_export.py` (see `workspace_export/full_export.py` — the `_export_unity_catalog` method accepts `include_catalogs` and `owned_only` via `UnityCatalogExporter`).
+The UC exporter is automatically invoked by `export_azure.sh` as the `unity_catalog` component. To control which catalogs are exported when running the full workspace migration, use these flags when calling the full exporter from `full_export.py` (see `workspace_export/full_export.py` — the `_export_unity_catalog` method accepts `include_catalogs` and `owned_only` via `UnityCatalogExporter`).
 
 For most production migrations you can run the standalone CLI before or after the full workspace export:
 
 ```bash
 # Run full workspace export
-./migrate_workspace.sh --workspace-url ... --token ... --azure
+./export_azure.sh --workspace-url ... --token ... --azure
 
 # Then export specific UC catalogs separately
 python3 export_unity_catalog.py \

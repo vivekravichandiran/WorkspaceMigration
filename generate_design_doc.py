@@ -184,7 +184,7 @@ def build_document() -> str:
     parts.append(h2("2.1  High-Level Flow"))
     parts.append(body(
         "The migration is orchestrated by two shell scripts. "
-        "'migrate_workspace.sh' drives the export side and 'import_gcp.sh' "
+        "'export_azure.sh' drives the export side and 'import_gcp.sh' "
         "drives the transform + import side. Both scripts generate a session ID "
         "(format: YYYYMMDDHHMI) that is used as the folder name for all logs and "
         "exported artefacts."
@@ -328,9 +328,9 @@ def build_document() -> str:
     parts.append(h1("5  Script & Module Reference"))
     parts.append(make_table([
         ["File", "Role", "Trigger"],
-        ["migrate_workspace.sh", "Export orchestrator — generates session, runs Step 0 inventory, invokes full_export.py", "Manual / CI"],
+        ["export_azure.sh", "Export orchestrator — generates session, runs Step 0 inventory, invokes full_export.py", "Manual / CI"],
         ["import_gcp.sh", "Import orchestrator — SP reconcile → GCP transform → migrate → extra_importers → reports", "Manual / CI"],
-        ["workspace_export/full_export.py", "Export engine; calls REST APIs for all 16 component types; writes export_status.json", "migrate_workspace.sh"],
+        ["workspace_export/full_export.py", "Export engine; calls REST APIs for all 16 component types; writes export_status.json", "export_azure.sh"],
         ["workspace_export/exporters/base.py", "Base HTTP client for export API calls with retry logic", "full_export.py"],
         ["workspace_export/exporters/workspace_files.py", "Downloads all non-notebook workspace files preserving paths", "full_export.py"],
         ["workspace_import/sp_migrator.py", "SP scan + create + patch; in-place patch guard; generates sp_mapping.json", "import_gcp.sh Step 2"],
@@ -340,7 +340,7 @@ def build_document() -> str:
         ["workspace_import/workspace_files_importer.py", "Upload workspace files from manifest; base64 encode; mkdirs", "extra_importers.py"],
         ["workspace_import/html_reporter.py", "Generates export_report.html and import_report.html with tabs, KPIs, checklist", "import_gcp.sh"],
         ["workspace_import/compare_report.py", "Side-by-side comparison report; highlights errors; generates comparison_report.html", "import_gcp.sh"],
-        ["workspace_inventory.py", "Standalone inventory via REST APIs; 16 component types; paginated HTML report", "migrate_workspace.sh Step 0"],
+        ["workspace_inventory.py", "Standalone inventory via REST APIs; 16 component types; paginated HTML report", "export_azure.sh Step 0"],
         ["node_type_mapping.csv", "Azure VM → GCP machine type lookup table with optional zone hints", "import_jobs_gcp.py"],
         ["gcp_import_config.json", "GCP-specific defaults: availability, fields to remove, schedule behaviour", "import_jobs_gcp.py"],
     ], col_widths=[2200, 4000, 1800]))
@@ -389,7 +389,7 @@ def build_document() -> str:
     parts.append(h2("7.2  Export Command"))
     parts.append(body("Run the following to start an export from the Azure workspace:"))
     parts.append(bullet(
-        "cd /path/to/WorkspaceMigration && ./migrate_workspace.sh "
+        "cd /path/to/WorkspaceMigration && ./export_azure.sh "
         "--workspace-url https://<azure>.azuredatabricks.net "
         "--token <azure_pat>"
     ))

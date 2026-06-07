@@ -51,7 +51,7 @@ python3 workspace_inventory.py \
   --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 # 2. Export + auto-stage
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://<workspace>.azuredatabricks.net \
   --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --azure
@@ -93,7 +93,7 @@ The tools exchange credentials for a Bearer token via `POST /oidc/v1/token` auto
 | Tool | Purpose |
 |---|---|
 | `workspace_inventory.py` | Standalone inventory — generates HTML + Excel reports |
-| `migrate_workspace.sh` | Full export orchestrator (inventory → export → staging) |
+| `export_azure.sh` | Full export orchestrator (inventory → export → staging) |
 | `import_jobs_gcp.py` | GCP pre-processor + staging builder + extra component importer |
 | `import_gcp.sh` | Full import orchestrator |
 
@@ -156,7 +156,7 @@ Users, Groups, Service Principals, Notebooks, Workspace Files, Jobs, All-Purpose
 
 ## Export
 
-`migrate_workspace.sh` orchestrates the full export in **3 steps**:
+`export_azure.sh` orchestrates the full export in **3 steps**:
 
 ```
 Step 0  →  Pre-export workspace inventory (HTML + Excel)
@@ -166,7 +166,7 @@ Step 2  →  Auto-staging (copy → apply GCP transforms + user remapping)
 
 ### Basic usage
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://<workspace>.azuredatabricks.net \
   --token dapiXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --azure
@@ -174,7 +174,7 @@ Step 2  →  Auto-staging (copy → apply GCP transforms + user remapping)
 
 ### OAuth
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url https://<workspace>.azuredatabricks.net \
   --client-id     <client-id> \
   --client-secret <client-secret> \
@@ -233,19 +233,19 @@ Step 2  →  Auto-staging (copy → apply GCP transforms + user remapping)
 
 ```bash
 # Jobs only
-./migrate_workspace.sh --workspace-url <URL> --token <PAT> \
+./export_azure.sh --workspace-url <URL> --token <PAT> \
   --skip users groups notebooks clusters instance_pools metastore secrets \
          sql_warehouses dlt_pipelines repos lakeview_dashboards \
          genie_spaces serving_endpoints unity_catalog
 
 # Notebooks only
-./migrate_workspace.sh --workspace-url <URL> --token <PAT> \
+./export_azure.sh --workspace-url <URL> --token <PAT> \
   --skip users groups clusters jobs instance_pools metastore secrets \
          sql_warehouses dlt_pipelines repos lakeview_dashboards \
          genie_spaces serving_endpoints unity_catalog
 
 # SQL Warehouses + DLT + Genie Spaces only
-./migrate_workspace.sh --workspace-url <URL> --token <PAT> \
+./export_azure.sh --workspace-url <URL> --token <PAT> \
   --skip users groups notebooks clusters jobs instance_pools metastore \
          secrets repos lakeview_dashboards serving_endpoints unity_catalog
 ```
@@ -483,7 +483,7 @@ Genie Spaces require an internal `serialized_space` protobuf that cannot be extr
 
 ### Re-generate export report without re-running
 ```bash
-./migrate_workspace.sh \
+./export_azure.sh \
   --workspace-url <URL> --token <PAT> \
   --session <SESSION> \
   --report-only
